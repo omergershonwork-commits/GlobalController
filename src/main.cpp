@@ -1,19 +1,20 @@
-#define DISABLE_CODE_FOR_RECEIVER
-#define SEND_PWM_BY_TIMER
-
 #include <M5Cardputer.h>
-#include <IRremote.hpp>
+
+#include "ir/ArduinoIrTransmitter.h"
 
 namespace {
 constexpr unsigned long kSerialBaud = 115200;
 constexpr unsigned long kLoopDelayMs = 5;
 constexpr uint8_t kIrTxPin = 44;
 
-// LG TV power signal commonly represented by legacy MSB code 0x20DF10EF.
-// Arduino-IRremote's structured NEC form is address 0x04, command 0x08.
-constexpr uint16_t kLgNecAddress = 0x04;
-constexpr uint16_t kLgPowerCommand = 0x08;
-constexpr int_fast8_t kPowerRepeats = 0;
+constexpr IrCode kLgPowerCode{
+    IrProtocol::Nec,
+    0x04,
+    0x08,
+    0,
+};
+
+ArduinoIrTransmitter irTransmitter(kIrTxPin);
 
 void drawScreen(const String& status, uint16_t statusColor = WHITE) {
     auto& display = M5Cardputer.Display;
@@ -77,14 +78,18 @@ bool containsPowerKey(const Keyboard_Class::KeysState& state) {
 void sendLgPower() {
     Serial.printf(
         "Sending LG power: protocol=NEC address=0x%02X command=0x%02X repeats=%d pin=%u\n",
-        kLgNecAddress,
-        kLgPowerCommand,
-        kPowerRepeats,
+        kLgPowerCode.address,
+        kLgPowerCode.command,
+        kLgPowerCode.repeats,
         kIrTxPin
     );
 
-    IrSender.sendNEC(kLgNecAddress, kLgPowerCommand, kPowerRepeats);
-    drawScreen("Power IR sent", GREEN);
+    const SendResult result = irTransmitter.send(kLgPowerCode);
+    if (result == SendResult::Success) {
+        drawScreen("Power IR sent", GREEN);
+    } else {
+        drawScreen("Unsupported protocol", RED);
+    }
 }
 }  // namespace
 
@@ -94,13 +99,11 @@ void setup() {
     Serial.begin(kSerialBaud);
 
     M5Cardputer.Display.setRotation(1);
-
-    IrSender.begin(DISABLE_LED_FEEDBACK);
-    IrSender.setSendPin(kIrTxPin);
+    irTransmitter.begin();
 
     drawScreen("Ready");
 
-    Serial.println("GlobalController TV-002 ready");
+    Serial.println("GlobalController TV-003 ready");
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
 }
 
