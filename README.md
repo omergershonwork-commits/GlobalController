@@ -2,35 +2,33 @@
 
 Portable universal-controller firmware for the **M5Stack Cardputer Adv**.
 
-The project is being implemented incrementally. Every implementation step is developed on a dedicated branch and delivered through a pull request.
+The project is implemented incrementally. Every implementation step is developed on a dedicated branch and delivered through a pull request.
 
-## Current milestone: TV-004 LG television profile
+## Current milestone: TV-005 keyboard controls
 
-This milestone moves model-specific infrared codes into a reusable profile for the **LG 37LD450-ZA**.
+This milestone maps the Cardputer keyboard to the **LG 37LD450-ZA** profile and adds controlled hold-to-repeat behavior.
 
-Current behavior:
+## Keyboard layout
 
-- boots the Cardputer Adv through `M5Cardputer`
-- initializes the built-in IR emitter on GPIO 44
-- loads an `Lg37Ld450Profile`
-- resolves `TvCommand::Power` through the profile
-- sends the same physically verified power signal when `P` is pressed
-- records whether each profile entry is verified or provisional
-- compiles automatically in GitHub Actions with PlatformIO
+| Cardputer key | TV action | Hold repeats |
+|---|---|---:|
+| `P` | Power | No |
+| `M` | Mute | No |
+| `U` / `J` | Volume up / down | Yes |
+| `R` / `F` | Channel up / down | Yes |
+| `W` / `A` / `S` / `D` | Navigate up / left / down / right | Yes |
+| `Enter` or `O` | OK | No |
+| `Delete` or `B` | Back | No |
+| `H` | Home/menu | No |
+| `I` | Input source | No |
 
-The profile contains these logical commands:
+Repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
 
-- power
-- volume up and down
-- mute
-- channel up and down
-- navigation up, down, left, and right
-- OK
-- back
-- home
-- input
+## Verification state
 
-Only the power command has been physically verified on this television. The remaining commands are common LG NEC codes and remain provisional until tested in TV-005.
+All 14 profile commands and the tap-versus-hold behavior were physically verified on the user's LG 37LD450-ZA during TV-005.
+
+Verified commands produce a green status message after the IR signal is transmitted.
 
 ## Requirements
 
@@ -47,15 +45,13 @@ pio run -e m5stack-cardputer-adv
 
 ## Upload
 
-Connect the Cardputer Adv by USB-C and run:
-
 ```bash
 pio run -e m5stack-cardputer-adv -t upload
 ```
 
-This project uses the ESP32-S3 ROM loader workaround because the temporary esptool upload stub was unreliable on the tested Cardputer connection.
+The project uses the ESP32-S3 ROM loader workaround because the temporary esptool upload stub was unreliable on the tested Cardputer connection.
 
-If the device is not detected, switch it off, hold the `G0` button, connect USB-C, release `G0`, and retry the upload.
+When required, enter download mode by switching the Cardputer off, holding `G0`, connecting USB-C, and then releasing `G0`.
 
 ## Serial monitor
 
@@ -63,35 +59,36 @@ If the device is not detected, switch it off, hold the `G0` button, connect USB-
 pio device monitor -b 115200
 ```
 
-## TV-004 acceptance test
+## TV-005 acceptance result
 
-1. Flash the firmware.
-2. Confirm that the display identifies `LG 37LD450-ZA` and shows `Status: Ready`.
-3. Press `P` once.
-4. Confirm that the display changes to `Status: Power IR sent`.
-5. Confirm that the television toggles power exactly as it did in TV-003.
-6. Optionally check serial output for `Profile code status: verified`.
+The following controls were verified on the physical television:
 
-TV-004 intentionally does not expose the provisional commands through the keyboard yet.
+- power
+- volume up and down, including hold-to-repeat
+- mute
+- channel up and down, including hold-to-repeat
+- navigation up, down, left, and right, including hold-to-repeat
+- OK
+- back
+- home/menu
+- input/source
 
 ## Planned implementation sequence
 
 - [x] TV-001: PlatformIO project, display, keyboard smoke test, and CI build
 - [x] TV-002: built-in IR emitter and one verified LG TV power command
 - [x] TV-003: TV command and IR-code domain model
-- [ ] TV-004: first complete TV profile
-- [ ] TV-005: keyboard command mapping and hold/repeat behavior
+- [x] TV-004: first complete TV profile
+- [x] TV-005: keyboard command mapping and hold/repeat behavior
 - [ ] TV-006: remote application coordinator
 - [ ] TV-007: main remote UI and feedback states
 - [ ] TV-008: numeric channel entry and native tests
 
 ## Project configuration
 
-The PlatformIO environment follows M5Stack's Cardputer Adv configuration:
-
 - Espressif32 platform `6.7.0`
 - `esp32-s3-devkitc-1` board definition
 - Arduino framework
 - USB CDC enabled at boot
 - `M5Cardputer` pinned to release `1.1.1`
-- `Arduino-IRremote` resolved through the M5Cardputer dependency graph
+- Arduino-IRremote provided through the M5Cardputer dependency graph
