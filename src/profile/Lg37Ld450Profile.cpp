@@ -51,6 +51,11 @@ const char* Lg37Ld450Profile::model() const {
     return "37LD450-ZA";
 }
 
+TvCommandRoute Lg37Ld450Profile::routeFor(TvCommand command) const {
+    static_cast<void>(command);
+    return TvCommandRoute::Infrared;
+}
+
 const TvProfileEntry* Lg37Ld450Profile::find(TvCommand command) const {
     return findEntry(kLgEntries, command);
 }
@@ -61,6 +66,12 @@ const char* XiaomiMiTvMssp3Profile::brand() const {
 
 const char* XiaomiMiTvMssp3Profile::model() const {
     return "MiTV-MSSP3";
+}
+
+TvCommandRoute XiaomiMiTvMssp3Profile::routeFor(TvCommand command) const {
+    return command == TvCommand::Power
+        ? TvCommandRoute::Infrared
+        : TvCommandRoute::Wifi;
 }
 
 const TvProfileEntry* XiaomiMiTvMssp3Profile::find(TvCommand command) const {
