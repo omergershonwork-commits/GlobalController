@@ -114,7 +114,8 @@ bool AndroidTvRemoteAdapter::submitPairingCode(const String& code) {
         return false;
     }
 
-    for (const char character : normalized) {
+    for (std::size_t index = 0; index < normalized.length(); ++index) {
+        const char character = normalized[index];
         const bool isDigit = character >= '0' && character <= '9';
         const bool isHexLetter = character >= 'A' && character <= 'F';
         if (!isDigit && !isHexLetter) {
