@@ -1,5 +1,7 @@
 #include "Lg37Ld450Profile.h"
 
+#include <cstddef>
+
 namespace {
 constexpr std::uint16_t kLgAddress = 0x04;
 constexpr std::uint16_t kXiaomiDevice = 0x86;
