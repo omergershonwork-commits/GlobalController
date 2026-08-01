@@ -13,6 +13,11 @@ public:
     void setProfile(const TvProfile& profile);
     void showReady();
     void showEvent(const RemoteEvent& event);
+    void showMessage(
+        const char* state,
+        const char* detail,
+        std::uint16_t accentColor
+    );
 
 private:
     void drawLayout();
