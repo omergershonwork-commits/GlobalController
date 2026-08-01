@@ -26,10 +26,9 @@ Repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms 
 
 ## Verification state
 
-- Power is physically verified on the user's LG 37LD450-ZA.
-- All other commands remain provisional until tested on that television.
-- Verified commands produce a green status message.
-- Provisional commands produce a yellow `test sent` status message.
+All 14 profile commands and the tap-versus-hold behavior were physically verified on the user's LG 37LD450-ZA during TV-005.
+
+Verified commands produce a green status message after the IR signal is transmitted.
 
 ## Requirements
 
@@ -60,20 +59,19 @@ When required, enter download mode by switching the Cardputer off, holding `G0`,
 pio device monitor -b 115200
 ```
 
-## TV-005 acceptance test
+## TV-005 acceptance result
 
-Flash the branch and test the controls in this order:
+The following controls were verified on the physical television:
 
-1. `P`: power still toggles correctly.
-2. `U` and `J`: volume changes once on a tap and repeatedly while held.
-3. `M`: mute toggles once.
-4. `I`: input/source menu opens.
-5. `W`, `A`, `S`, `D`, and `Enter`: menu navigation works.
-6. `Delete`: returns to the previous screen.
-7. `R` and `F`: channel changes once on a tap and repeatedly while held.
-8. `H`: home or menu behavior is identified.
-
-Record each command as `worked`, `wrong action`, or `no reaction`. Do not mark provisional profile entries as verified until the physical result is known.
+- power
+- volume up and down, including hold-to-repeat
+- mute
+- channel up and down, including hold-to-repeat
+- navigation up, down, left, and right, including hold-to-repeat
+- OK
+- back
+- home/menu
+- input/source
 
 ## Planned implementation sequence
 
@@ -81,7 +79,7 @@ Record each command as `worked`, `wrong action`, or `no reaction`. Do not mark p
 - [x] TV-002: built-in IR emitter and one verified LG TV power command
 - [x] TV-003: TV command and IR-code domain model
 - [x] TV-004: first complete TV profile
-- [ ] TV-005: keyboard command mapping and hold/repeat behavior
+- [x] TV-005: keyboard command mapping and hold/repeat behavior
 - [ ] TV-006: remote application coordinator
 - [ ] TV-007: main remote UI and feedback states
 - [ ] TV-008: numeric channel entry and native tests
