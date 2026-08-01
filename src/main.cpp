@@ -6,6 +6,7 @@
 #include "input/KeyboardCommandMapper.h"
 #include "ir/ArduinoIrTransmitter.h"
 #include "profile/Lg37Ld450Profile.h"
+#include "ui/RemoteScreen.h"
 
 namespace {
 constexpr unsigned long kSerialBaud = 115200;
@@ -22,50 +23,27 @@ RemoteApplication remoteApplication(
     kInitialRepeatDelayMs,
     kRepeatIntervalMs
 );
+RemoteScreen remoteScreen(tvProfile);
 
 const char* verificationLabel(CodeVerification verification) {
     return verification == CodeVerification::VerifiedOnDevice ? "verified" : "provisional";
 }
 
-void drawScreen(const String& status, std::uint16_t statusColor = WHITE) {
-    auto& display = M5Cardputer.Display;
-
-    display.fillScreen(BLACK);
-    display.setCursor(8, 6);
-    display.setTextSize(2);
-    display.setTextColor(GREEN, BLACK);
-    display.println("GlobalController");
-
-    display.setTextSize(1);
-    display.setTextColor(WHITE, BLACK);
-    display.print("TV: ");
-    display.print(tvProfile.brand());
-    display.print(' ');
-    display.println(tvProfile.model());
-    display.println("P power  M mute  I input  H home");
-    display.println("U/J volume       R/F channel");
-    display.println("W/A/S/D move     Enter/O OK");
-    display.println("Delete/B back");
-    display.setTextColor(statusColor, BLACK);
-    display.print("Status: ");
-    display.println(status);
-}
-
-void renderEvent(const RemoteEvent& event) {
+void logEvent(const RemoteEvent& event) {
     switch (event.type) {
         case RemoteEventType::None:
             return;
 
         case RemoteEventType::UnmappedInput:
-            drawScreen("Unmapped key");
+            Serial.println("Keyboard input is not mapped to a TV command");
             return;
 
         case RemoteEventType::CommandUnavailable:
-            drawScreen(String(event.label) + " unavailable", RED);
+            Serial.printf("TV command unavailable: %s\n", event.label);
             return;
 
         case RemoteEventType::UnsupportedProtocol:
-            drawScreen("Unsupported protocol", RED);
+            Serial.printf("Unsupported IR protocol for command: %s\n", event.label);
             return;
 
         case RemoteEventType::CommandSent:
@@ -84,10 +62,6 @@ void renderEvent(const RemoteEvent& event) {
         event.repeated ? "yes" : "no"
     );
     Serial.printf("Profile code status: %s\n", verificationLabel(event.verification));
-
-    const bool verified = event.verification == CodeVerification::VerifiedOnDevice;
-    const String suffix = event.repeated ? " repeat sent" : " IR sent";
-    drawScreen(String(event.label) + suffix, verified ? GREEN : YELLOW);
 }
 
 void handleKeyboard() {
@@ -102,7 +76,13 @@ void handleKeyboard() {
         inputChanged,
         millis()
     );
-    renderEvent(event);
+
+    if (event.type != RemoteEventType::None) {
+        logEvent(event);
+        remoteScreen.showEvent(event);
+    } else if (inputChanged && !pressed) {
+        remoteScreen.showReady();
+    }
 }
 }  // namespace
 
@@ -113,10 +93,9 @@ void setup() {
 
     M5Cardputer.Display.setRotation(1);
     irTransmitter.begin();
+    remoteScreen.begin();
 
-    drawScreen("Ready");
-
-    Serial.println("GlobalController TV-006 ready");
+    Serial.println("GlobalController TV-007 ready");
     Serial.printf("Loaded profile: %s %s\n", tvProfile.brand(), tvProfile.model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
     Serial.printf(
