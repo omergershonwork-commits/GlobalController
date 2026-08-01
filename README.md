@@ -4,79 +4,140 @@ Portable universal-controller firmware for the **M5Stack Cardputer Adv**.
 
 The project is implemented incrementally. Every implementation step is developed on a dedicated branch and delivered through a pull request.
 
-## Current milestone: TV-008 Xiaomi multi-profile support
+## Current milestone: TV-009 Xiaomi hybrid remote
 
-This milestone keeps the physically verified **LG 37LD450-ZA** profile and adds limited infrared support for the Xiaomi Android TV hardware identifier **MiTV-MSSP3**.
-
-Press `T` to cycle between the installed television profiles:
+GlobalController supports two television profiles:
 
 ```text
 LG 37LD450-ZA
 Xiaomi MiTV-MSSP3
 ```
 
-The active television is displayed below the `GlobalController` heading.
+Press `T` to switch profiles.
 
-## Xiaomi implementation
+The LG profile remains fully infrared. The Xiaomi profile is hybrid:
 
-Physical testing showed that the MiTV-MSSP3 accepts the Xiaomi power command through infrared, but the normal navigation, volume, mute, home, back, OK, input, and channel commands do not react to infrared. These controls are therefore treated as Bluetooth or network controls rather than guessed IR codes.
+```text
+Power
+    -> built-in infrared emitter
 
-The Xiaomi IR profile now contains only:
+Volume, mute, channels, navigation, OK, Back, Home, and Input
+    -> Wi-Fi
+    -> Android TV Remote Service
+```
 
-- power, sent as a 20-bit Xiaomi RC-MM-style frame at 36 kHz
-- one additional complete frame to improve borderline reception
+The Wi-Fi controls use Android TV Remote protocol v2. They do not require ADB or Android developer mode, but they do require the Cardputer and television to be connected to the same local network.
 
-Every non-power key displays `UNAVAILABLE` in Xiaomi mode and sends no infrared signal.
+## Local network configuration
 
-The Xiaomi power command remains `Provisional` until repeated physical testing confirms reliable operation without double toggling. The screen therefore displays `TEST SIGNAL` in yellow after transmission.
+Wi-Fi credentials are not stored in Git.
 
-Full Xiaomi control is planned as a separate transport using the Android TV Remote protocol over Wi-Fi or a Bluetooth-compatible implementation. Voice control is outside the current IR milestone.
+Copy the template:
+
+```powershell
+Copy-Item include/local_config.example.h include/local_config.h
+```
+
+Edit `include/local_config.h` locally:
+
+```cpp
+#pragma once
+
+#define GC_WIFI_SSID "YOUR_WIFI_NAME"
+#define GC_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define GC_XIAOMI_TV_IP "192.168.1.100"
+```
+
+`include/local_config.h` is ignored by Git. Do not commit it.
+
+The television IP can normally be found under the Xiaomi TV network settings. A DHCP reservation in the router is recommended so the address does not change later.
+
+When local configuration is missing, the firmware still builds and all LG controls plus Xiaomi infrared power remain available. Xiaomi non-power commands display `WIFI SETUP`.
+
+## First Xiaomi pairing
+
+1. Build and upload the firmware with `include/local_config.h` present.
+2. Turn the Xiaomi TV on and keep it connected to the same network as the Cardputer.
+3. Press `T` until `Xiaomi MiTV-MSSP3` is selected.
+4. Wait while the display shows `WIFI CONNECT` and `TV CONNECT`.
+5. The TV should display a six-character hexadecimal pairing code.
+6. Type that code on the Cardputer keyboard.
+7. Use `Delete` to correct the last character when needed.
+8. Press `Enter` after all six characters are entered.
+9. Wait for `WIFI READY`.
+
+During pairing, normal remote commands are temporarily disabled so typed code characters cannot accidentally control the television.
 
 ## Keyboard layout
 
-| Cardputer key | LG action | Xiaomi IR action |
-|---|---|---|
-| `T` | Select next TV profile | Select next TV profile |
-| `P` | Power | Power test signal |
-| `M` | Mute | Unavailable over IR |
-| `U` / `J` | Volume up / down | Unavailable over IR |
-| `R` / `F` | Channel up / down | Unavailable over IR |
-| `W` / `A` / `S` / `D` | Navigation | Unavailable over IR |
-| `Enter` or `O` | OK | Unavailable over IR |
-| `Delete` or `B` | Back | Unavailable over IR |
-| `H` | Home/menu | Unavailable over IR |
-| `I` | Input source | Unavailable over IR |
+| Cardputer key | TV action | LG route | Xiaomi route |
+|---|---|---|---|
+| `T` | Select next TV profile | Local UI | Local UI |
+| `P` | Power | IR | IR fallback |
+| `M` | Mute | IR | Wi-Fi |
+| `U` / `J` | Volume up / down | IR | Wi-Fi |
+| `R` / `F` | Channel up / down | IR | Wi-Fi |
+| `W` / `A` / `S` / `D` | Navigation | IR | Wi-Fi |
+| `Enter` or `O` | OK | IR | Wi-Fi |
+| `Delete` or `B` | Back | IR | Wi-Fi |
+| `H` | Home/menu | IR | Wi-Fi |
+| `I` | Input source | IR | Wi-Fi |
 
-LG repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
+Repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
 
-## Runtime flow
+## Runtime architecture
 
 ```text
 Cardputer keyboard
-    -> profile selection or KeyboardCommandMapper
-    -> CommandBinding
+    -> KeyboardCommandMapper
     -> RemoteApplication
-    -> active TV profile lookup
-    -> IrTransmitter
-    -> built-in IR emitter
+       - shared first-press and hold-repeat timing
+    -> HybridTvCommandSender
+       - active profile chooses IR or Wi-Fi
+
+IR route
+    -> TvProfile IR lookup
+    -> ArduinoIrTransmitter
+    -> built-in emitter on GPIO 44
+
+Wi-Fi route
+    -> AndroidTvRemoteAdapter
+    -> TLS pairing / Android TV Remote Service
+    -> Xiaomi television
 
 RemoteEvent
     -> RemoteScreen
     -> Cardputer display
 ```
 
+## Status messages
+
+| Display state | Meaning |
+|---|---|
+| `WIFI SETUP` | Local Wi-Fi configuration is missing |
+| `WIFI CONNECT` | Cardputer is joining the configured network |
+| `TV CONNECT` | Opening the Android TV remote connection |
+| `PAIRING` | Pairing handshake is running |
+| `PAIR CODE` | Type the six-character code displayed by the TV |
+| `WIFI READY` | Xiaomi network controls are available |
+| `WIFI SENT` | A command was sent over Wi-Fi |
+| `WIFI REPEAT` | A held command was repeated over Wi-Fi |
+| `WIFI WAIT` | Command was requested before pairing/connection completed |
+| `WIFI ERROR` | Pairing or network transport failed; inspect serial output |
+
 ## Verification state
 
-- All 14 LG commands and their hold behavior are physically verified on the user's LG 37LD450-ZA.
-- The TV-006 coordinator and TV-007 dashboard regressions are physically verified.
-- Xiaomi MiTV-MSSP3 power reacted through infrared but was inconsistent with one frame.
-- Xiaomi non-power commands did not react through infrared and were removed from the profile.
-- The revised two-frame Xiaomi power signal is pending hardware verification.
+- All 14 LG commands and hold behavior are physically verified on the user's LG 37LD450-ZA.
+- Xiaomi infrared power reacted physically but remains under reliability testing.
+- Xiaomi non-power infrared attempts did not work and were removed.
+- Xiaomi Wi-Fi transport is implemented and requires physical pairing and command verification.
 
 ## Requirements
 
 - M5Stack Cardputer Adv
 - LG 37LD450-ZA and/or Xiaomi MiTV-MSSP3 television
+- 2.4 GHz-compatible Wi-Fi network for the Cardputer
+- Xiaomi TV and Cardputer on the same local network
 - USB-C data cable
 - PlatformIO Core 6.1.19 or the PlatformIO IDE extension
 
@@ -102,15 +163,18 @@ When required, enter download mode by switching the Cardputer off, holding `G0`,
 pio device monitor -b 115200
 ```
 
-## Revised TV-008 acceptance test
+## TV-009 acceptance test
 
-1. Start with LG selected and confirm one previously verified LG command still works.
-2. Press `T` and confirm the heading changes to `Xiaomi MiTV-MSSP3`.
-3. Aim directly at the Xiaomi receiver and press `P` ten times, waiting for each power transition to finish.
-4. Record the number of successful power actions out of ten.
-5. Confirm that one press never produces two power transitions.
-6. Press a non-power key and confirm the display shows `UNAVAILABLE` and the TV does not react.
-7. Press `T` again and confirm the controller returns to the LG profile.
+1. Confirm one LG command still works.
+2. Select Xiaomi and confirm infrared power still reacts.
+3. Confirm the Cardputer connects to the configured Wi-Fi network.
+4. Complete the six-character TV pairing flow.
+5. Confirm `WIFI READY` appears.
+6. Test volume up/down and mute.
+7. Test `W`, `A`, `S`, `D`, OK, Back, and Home.
+8. Test channel up/down and Input; record unsupported actions separately because Android TV models may handle these keys differently.
+9. Hold volume and navigation keys and verify repeat behavior.
+10. Switch back to LG and confirm its IR controls remain unchanged.
 
 ## Planned implementation sequence
 
@@ -122,7 +186,7 @@ pio device monitor -b 115200
 - [x] TV-006: remote application coordinator
 - [x] TV-007: main remote UI and feedback states
 - [ ] TV-008: Xiaomi MiTV-MSSP3 profile selection and reliable IR power
-- [ ] TV-009: Android TV Wi-Fi remote transport for Xiaomi controls
+- [ ] TV-009: Xiaomi Android TV Wi-Fi pairing and remote controls
 - [ ] TV-010: numeric channel entry and native tests
 
 ## Project configuration
@@ -133,3 +197,5 @@ pio device monitor -b 115200
 - USB CDC enabled at boot
 - `M5Cardputer` pinned to release `1.1.1`
 - Arduino-IRremote provided through the M5Cardputer dependency graph
+- Android TV Remote protocol reference pinned to an exact Git commit
+- Arduino wolfSSL and Crypto dependencies pinned through PlatformIO
