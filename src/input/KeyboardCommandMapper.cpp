@@ -1,11 +1,11 @@
 #include "KeyboardCommandMapper.h"
 
 namespace {
-KeyboardCommand noMatch() {
+CommandBinding noMatch() {
     return {false, TvCommand::Power, "", false};
 }
 
-KeyboardCommand binding(TvCommand command, const char* label, bool repeatable) {
+CommandBinding binding(TvCommand command, const char* label, bool repeatable) {
     return {true, command, label, repeatable};
 }
 
@@ -18,7 +18,7 @@ char toLowerAscii(char value) {
 }
 }  // namespace
 
-KeyboardCommand KeyboardCommandMapper::map(const Keyboard_Class::KeysState& state) {
+CommandBinding KeyboardCommandMapper::map(const Keyboard_Class::KeysState& state) {
     if (state.enter) {
         return binding(TvCommand::Ok, "OK", false);
     }
