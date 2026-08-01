@@ -1,8 +1,6 @@
 from pathlib import Path
 import re
 
-from SCons.Script import COMMAND_LINE_TARGETS
-
 Import("env")
 
 
@@ -21,23 +19,20 @@ def source_files(dependency_root: Path):
 
 
 def patch_android_tv_remote() -> None:
-    # PlatformIO also executes pre-scripts for `pio run -t clean`. Cleaning does
-    # not compile the dependency and must keep working even when .pio/libdeps
-    # has already been removed.
-    if "clean" in COMMAND_LINE_TARGETS:
-        print("GlobalController Android TV compatibility patch: skipped for clean")
-        return
-
     dependency_root = (
         Path(env.subst("$PROJECT_LIBDEPS_DIR"))
         / env.subst("$PIOENV")
         / "AndroidTvRemote"
     )
 
+    # PlatformIO executes pre-scripts for clean targets too. A clean can run
+    # before dependencies exist or after they have already been removed.
     if not dependency_root.exists():
-        raise RuntimeError(
-            "AndroidTvRemote dependency is missing; PlatformIO dependency resolution did not complete"
+        print(
+            "GlobalController Android TV compatibility patch: dependency is absent; "
+            "nothing to patch"
         )
+        return
 
     marker_path = dependency_root / _MARKER_FILE
     patched_files = []
@@ -51,41 +46,32 @@ def patch_android_tv_remote() -> None:
         path.write_text(patched_content, encoding="utf-8")
         patched_files.append(path.relative_to(dependency_root).as_posix())
 
+    # Validate only the include directive that causes the ESP32/wolfSSL SHA
+    # collision. References to a WiFiClientSecure class or identifier in source
+    # code are not themselves conflicting includes and must not fail the build.
+    remaining_include_files = []
+    for path in source_files(dependency_root):
+        content = path.read_text(encoding="utf-8")
+        if _INCLUDE_PATTERN.search(content):
+            remaining_include_files.append(path.relative_to(dependency_root).as_posix())
+
+    if remaining_include_files:
+        raise RuntimeError(
+            "AndroidTvRemote still imports WiFiClientSecure in: "
+            + ", ".join(remaining_include_files)
+        )
+
+    marker_path.write_text("compatible\n", encoding="utf-8")
+
     if patched_files:
-        marker_path.write_text("patched\n", encoding="utf-8")
         print(
             "GlobalController Android TV compatibility patch: removed unused "
             f"WiFiClientSecure includes from {', '.join(patched_files)}"
         )
-        return
-
-    if marker_path.exists():
+    else:
         print(
-            "GlobalController Android TV compatibility patch: already applied"
+            "GlobalController Android TV compatibility patch: dependency already compatible"
         )
-        return
-
-    # Older revisions of this script changed the cached dependency without
-    # writing a marker. The pinned dependency may therefore already be in the
-    # desired state on a developer machine. Confirm that no source file still
-    # references WiFiClientSecure before accepting and marking that state.
-    remaining_references = []
-    for path in source_files(dependency_root):
-        content = path.read_text(encoding="utf-8")
-        if "WiFiClientSecure" in content:
-            remaining_references.append(path.relative_to(dependency_root).as_posix())
-
-    if remaining_references:
-        raise RuntimeError(
-            "AndroidTvRemote still references WiFiClientSecure in: "
-            + ", ".join(remaining_references)
-        )
-
-    marker_path.write_text("already compatible\n", encoding="utf-8")
-    print(
-        "GlobalController Android TV compatibility patch: includes were already absent; "
-        "marked dependency as compatible"
-    )
 
 
 patch_android_tv_remote()
