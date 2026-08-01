@@ -4,18 +4,68 @@ import re
 Import("env")
 
 
-_INCLUDE_PATTERN = re.compile(
+_WIFI_CLIENT_SECURE_INCLUDE_PATTERN = re.compile(
     r'^[ \t]*#[ \t]*include[ \t]*[<"]WiFiClientSecure\.h[>"][ \t]*(?://.*)?(?:\r?\n|$)',
     re.MULTILINE,
 )
-_MARKER_FILE = ".globalcontroller_wifi_client_secure_patch_applied"
+_ARDUINO_INCLUDE_PATTERN = re.compile(
+    r'^[ \t]*#[ \t]*include[ \t]*[<"]Arduino\.h[>"][ \t]*(?://.*)?(?:\r?\n|$)',
+    re.MULTILINE,
+)
+_MARKER_FILE = ".globalcontroller_compatibility_patch_applied"
 _SOURCE_SUFFIXES = {".h", ".hpp", ".cpp"}
+_REMOTE_MESSAGE_MANAGER_PATH = Path("src/remote/RemoteMessageManager.cpp")
 
 
 def source_files(dependency_root: Path):
     for path in dependency_root.rglob("*"):
         if path.is_file() and path.suffix.lower() in _SOURCE_SUFFIXES:
             yield path
+
+
+def remove_wifi_client_secure_includes(dependency_root: Path):
+    patched_files = []
+
+    for path in source_files(dependency_root):
+        content = path.read_text(encoding="utf-8")
+        patched_content, replacements = _WIFI_CLIENT_SECURE_INCLUDE_PATTERN.subn("", content)
+        if replacements == 0:
+            continue
+
+        path.write_text(patched_content, encoding="utf-8")
+        patched_files.append(path.relative_to(dependency_root).as_posix())
+
+    remaining_include_files = []
+    for path in source_files(dependency_root):
+        content = path.read_text(encoding="utf-8")
+        if _WIFI_CLIENT_SECURE_INCLUDE_PATTERN.search(content):
+            remaining_include_files.append(path.relative_to(dependency_root).as_posix())
+
+    if remaining_include_files:
+        raise RuntimeError(
+            "AndroidTvRemote still imports WiFiClientSecure in: "
+            + ", ".join(remaining_include_files)
+        )
+
+    return patched_files
+
+
+def ensure_arduino_serial_declaration(dependency_root: Path) -> bool:
+    path = dependency_root / _REMOTE_MESSAGE_MANAGER_PATH
+    if not path.exists():
+        raise RuntimeError(
+            "AndroidTvRemote RemoteMessageManager.cpp is missing from the pinned dependency"
+        )
+
+    content = path.read_text(encoding="utf-8")
+    if "Serial" not in content:
+        return False
+
+    if _ARDUINO_INCLUDE_PATTERN.search(content):
+        return False
+
+    path.write_text("#include <Arduino.h>\n" + content, encoding="utf-8")
+    return True
 
 
 def patch_android_tv_remote() -> None:
@@ -34,39 +84,27 @@ def patch_android_tv_remote() -> None:
         )
         return
 
+    patched_include_files = remove_wifi_client_secure_includes(dependency_root)
+    added_arduino_include = ensure_arduino_serial_declaration(dependency_root)
+
     marker_path = dependency_root / _MARKER_FILE
-    patched_files = []
-
-    for path in source_files(dependency_root):
-        content = path.read_text(encoding="utf-8")
-        patched_content, replacements = _INCLUDE_PATTERN.subn("", content)
-        if replacements == 0:
-            continue
-
-        path.write_text(patched_content, encoding="utf-8")
-        patched_files.append(path.relative_to(dependency_root).as_posix())
-
-    # Validate only the include directive that causes the ESP32/wolfSSL SHA
-    # collision. References to a WiFiClientSecure class or identifier in source
-    # code are not themselves conflicting includes and must not fail the build.
-    remaining_include_files = []
-    for path in source_files(dependency_root):
-        content = path.read_text(encoding="utf-8")
-        if _INCLUDE_PATTERN.search(content):
-            remaining_include_files.append(path.relative_to(dependency_root).as_posix())
-
-    if remaining_include_files:
-        raise RuntimeError(
-            "AndroidTvRemote still imports WiFiClientSecure in: "
-            + ", ".join(remaining_include_files)
-        )
-
     marker_path.write_text("compatible\n", encoding="utf-8")
 
-    if patched_files:
+    changes = []
+    if patched_include_files:
+        changes.append(
+            "removed unused WiFiClientSecure includes from "
+            + ", ".join(patched_include_files)
+        )
+    if added_arduino_include:
+        changes.append(
+            "added Arduino.h to src/remote/RemoteMessageManager.cpp for Serial"
+        )
+
+    if changes:
         print(
-            "GlobalController Android TV compatibility patch: removed unused "
-            f"WiFiClientSecure includes from {', '.join(patched_files)}"
+            "GlobalController Android TV compatibility patch: "
+            + "; ".join(changes)
         )
     else:
         print(
