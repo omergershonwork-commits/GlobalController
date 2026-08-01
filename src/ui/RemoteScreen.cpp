@@ -29,7 +29,12 @@ void RemoteScreen::setProfile(const TvProfile& profile) {
 }
 
 void RemoteScreen::showReady() {
-    drawStatus("READY", "Point IR edge toward television", GREEN);
+    const bool wifiProfile = profile_->routeFor(TvCommand::VolumeUp) == TvCommandRoute::Wifi;
+    drawStatus(
+        "READY",
+        wifiProfile ? "IR power + Wi-Fi controls" : "Point IR edge toward television",
+        GREEN
+    );
 }
 
 void RemoteScreen::showEvent(const RemoteEvent& event) {
@@ -49,14 +54,43 @@ void RemoteScreen::showEvent(const RemoteEvent& event) {
             drawStatus("IR ERROR", "Protocol is not supported", RED);
             return;
 
+        case RemoteEventType::WifiNotConfigured:
+            drawStatus("WIFI SETUP", "Create include/local_config.h", YELLOW);
+            return;
+
+        case RemoteEventType::WifiNotReady:
+            drawStatus("WIFI WAIT", "Connect or finish TV pairing", YELLOW);
+            return;
+
+        case RemoteEventType::TransportError:
+            drawStatus("SEND ERROR", event.label, RED);
+            return;
+
         case RemoteEventType::CommandSent:
             break;
+    }
+
+    if (event.route == TvCommandRoute::Wifi) {
+        drawStatus(
+            event.repeated ? "WIFI REPEAT" : "WIFI SENT",
+            event.label,
+            event.repeated ? CYAN : GREEN
+        );
+        return;
     }
 
     const bool verified = event.verification == CodeVerification::VerifiedOnDevice;
     const std::uint16_t accentColor = verified ? (event.repeated ? CYAN : GREEN) : YELLOW;
     const char* state = event.repeated ? "HOLD REPEAT" : (verified ? "COMMAND SENT" : "TEST SIGNAL");
     drawStatus(state, event.label, accentColor);
+}
+
+void RemoteScreen::showMessage(
+    const char* state,
+    const char* detail,
+    std::uint16_t accentColor
+) {
+    drawStatus(state, detail, accentColor);
 }
 
 void RemoteScreen::drawLayout() {
