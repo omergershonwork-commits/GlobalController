@@ -4,11 +4,19 @@ Portable universal-controller firmware for the **M5Stack Cardputer Adv**.
 
 The project is implemented incrementally. Every implementation step is developed on a dedicated branch and delivered through a pull request.
 
-## Current milestone: TV-006 application coordinator
+## Current milestone: TV-007 remote interface
 
-This milestone moves remote-control behavior out of `main.cpp` and into a reusable `RemoteApplication` coordinator.
+This milestone adds a dedicated `RemoteScreen` presentation layer and replaces the development-oriented text screen with a stable remote-control dashboard.
 
-The runtime flow is now:
+The display now contains:
+
+- the active television brand and model
+- the complete keyboard control map
+- a dedicated status area that updates without redrawing the full screen
+- distinct feedback for ready, command sent, hold repeat, unmapped input, unavailable commands, and IR protocol errors
+- automatic return to `READY` when the pressed key is released
+
+The runtime flow remains:
 
 ```text
 Cardputer keyboard
@@ -18,18 +26,11 @@ Cardputer keyboard
     -> TV profile lookup
     -> IrTransmitter
     -> built-in IR emitter
+
+RemoteEvent
+    -> RemoteScreen
+    -> Cardputer display
 ```
-
-The coordinator owns:
-
-- command/profile resolution
-- IR transmission requests
-- unavailable and unsupported-command results
-- initial press behavior
-- hold-to-repeat timing and state
-- verified/provisional metadata in returned events
-
-`main.cpp` now focuses on hardware polling, serial diagnostics, and display rendering.
 
 ## Keyboard layout
 
@@ -47,7 +48,7 @@ The coordinator owns:
 
 Repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
 
-All 14 commands were physically verified on the user's LG 37LD450-ZA during TV-005.
+All 14 commands were physically verified on the user's LG 37LD450-ZA during TV-005. TV-006 verified that the coordinator refactor preserved the same behavior.
 
 ## Requirements
 
@@ -78,15 +79,16 @@ When required, enter download mode by switching the Cardputer off, holding `G0`,
 pio device monitor -b 115200
 ```
 
-## TV-006 acceptance test
+## TV-007 acceptance test
 
-This step is an internal refactor and should preserve TV-005 behavior:
-
-1. Confirm `P` still toggles power once per press.
-2. Confirm `U` and `J` work on taps and repeat while held.
-3. Confirm one additional single-send command such as `M` or `I`.
-4. Confirm a navigation key repeats while held in a TV menu.
-5. Confirm the display and serial monitor still report the command result.
+1. Confirm the dashboard fits on screen and all four control rows are readable.
+2. Confirm the bottom status area initially displays `READY`.
+3. Press `P` and confirm the status changes to `COMMAND SENT` and `Power`.
+4. Hold `U` or `J` and confirm the status changes to `HOLD REPEAT` during repeated transmissions.
+5. Release the key and confirm the status returns to `READY`.
+6. Press an unmapped key such as `Q` and confirm `UNMAPPED KEY` appears.
+7. Confirm power, one volume command, and one navigation command still control the television correctly.
+8. Confirm repeated commands update only the bottom status area without obvious full-screen flashing.
 
 ## Planned implementation sequence
 
@@ -95,7 +97,7 @@ This step is an internal refactor and should preserve TV-005 behavior:
 - [x] TV-003: TV command and IR-code domain model
 - [x] TV-004: first complete TV profile
 - [x] TV-005: keyboard command mapping and hold/repeat behavior
-- [ ] TV-006: remote application coordinator
+- [x] TV-006: remote application coordinator
 - [ ] TV-007: main remote UI and feedback states
 - [ ] TV-008: numeric channel entry and native tests
 
