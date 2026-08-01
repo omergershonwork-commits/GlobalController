@@ -15,18 +15,47 @@ constexpr std::uint8_t kIrTxPin = 44;
 constexpr std::uint32_t kInitialRepeatDelayMs = 450;
 constexpr std::uint32_t kRepeatIntervalMs = 150;
 
-Lg37Ld450Profile tvProfile;
+Lg37Ld450Profile lgProfile;
+XiaomiMiTvMssp3Profile xiaomiProfile;
+TvProfile* const kProfiles[] = {&lgProfile, &xiaomiProfile};
+constexpr std::uint8_t kProfileCount = sizeof(kProfiles) / sizeof(kProfiles[0]);
+std::uint8_t activeProfileIndex = 0;
+
 ArduinoIrTransmitter irTransmitter(kIrTxPin);
 RemoteApplication remoteApplication(
-    tvProfile,
+    lgProfile,
     irTransmitter,
     kInitialRepeatDelayMs,
     kRepeatIntervalMs
 );
-RemoteScreen remoteScreen(tvProfile);
+RemoteScreen remoteScreen(lgProfile);
+
+const TvProfile& activeProfile() {
+    return *kProfiles[activeProfileIndex];
+}
 
 const char* verificationLabel(CodeVerification verification) {
     return verification == CodeVerification::VerifiedOnDevice ? "verified" : "provisional";
+}
+
+bool containsProfileSwitchKey(const Keyboard_Class::KeysState& state) {
+    for (const char character : state.word) {
+        if (character == 't' || character == 'T') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void selectNextProfile() {
+    activeProfileIndex = static_cast<std::uint8_t>((activeProfileIndex + 1) % kProfileCount);
+    const TvProfile& profile = activeProfile();
+
+    remoteApplication.setProfile(profile);
+    remoteScreen.setProfile(profile);
+
+    Serial.printf("Selected profile: %s %s\n", profile.brand(), profile.model());
 }
 
 void logEvent(const RemoteEvent& event) {
@@ -50,9 +79,10 @@ void logEvent(const RemoteEvent& event) {
             break;
     }
 
+    const TvProfile& profile = activeProfile();
     Serial.printf(
         "Sent %s %s: protocol=%u address=0x%02X command=0x%02X repeats=%d pin=%u held-repeat=%s\n",
-        tvProfile.brand(),
+        profile.brand(),
         event.label,
         static_cast<unsigned int>(event.code.protocol),
         event.code.address,
@@ -68,8 +98,15 @@ void handleKeyboard() {
     const bool inputChanged = M5Cardputer.Keyboard.isChange();
     const bool pressed = M5Cardputer.Keyboard.isPressed();
     const auto& state = M5Cardputer.Keyboard.keysState();
-    const CommandBinding binding = KeyboardCommandMapper::map(state);
 
+    if (pressed && containsProfileSwitchKey(state)) {
+        if (inputChanged) {
+            selectNextProfile();
+        }
+        return;
+    }
+
+    const CommandBinding binding = KeyboardCommandMapper::map(state);
     const RemoteEvent event = remoteApplication.update(
         binding,
         pressed,
@@ -95,8 +132,8 @@ void setup() {
     irTransmitter.begin();
     remoteScreen.begin();
 
-    Serial.println("GlobalController TV-007 ready");
-    Serial.printf("Loaded profile: %s %s\n", tvProfile.brand(), tvProfile.model());
+    Serial.println("GlobalController TV-008 ready");
+    Serial.printf("Loaded profile: %s %s\n", activeProfile().brand(), activeProfile().model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
     Serial.printf(
         "Repeat timing: initial=%lu ms interval=%lu ms\n",
