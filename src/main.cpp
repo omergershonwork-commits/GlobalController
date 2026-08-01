@@ -1,22 +1,22 @@
 #include <M5Cardputer.h>
 
+#include "domain/TvCommand.h"
 #include "ir/ArduinoIrTransmitter.h"
+#include "profile/Lg37Ld450Profile.h"
 
 namespace {
 constexpr unsigned long kSerialBaud = 115200;
 constexpr unsigned long kLoopDelayMs = 5;
-constexpr uint8_t kIrTxPin = 44;
+constexpr std::uint8_t kIrTxPin = 44;
 
-constexpr IrCode kLgPowerCode{
-    IrProtocol::Nec,
-    0x04,
-    0x08,
-    0,
-};
-
+Lg37Ld450Profile tvProfile;
 ArduinoIrTransmitter irTransmitter(kIrTxPin);
 
-void drawScreen(const String& status, uint16_t statusColor = WHITE) {
+const char* verificationLabel(CodeVerification verification) {
+    return verification == CodeVerification::VerifiedOnDevice ? "verified" : "provisional";
+}
+
+void drawScreen(const String& status, std::uint16_t statusColor = WHITE) {
     auto& display = M5Cardputer.Display;
 
     display.fillScreen(BLACK);
@@ -28,7 +28,10 @@ void drawScreen(const String& status, uint16_t statusColor = WHITE) {
     display.setTextSize(1);
     display.setTextColor(WHITE, BLACK);
     display.println();
-    display.println("TV: LG 37LD450-ZA");
+    display.print("TV: ");
+    display.print(tvProfile.brand());
+    display.print(' ');
+    display.println(tvProfile.model());
     display.println("Press P to toggle power");
     display.println("Point IR edge at the TV");
     display.println();
@@ -75,18 +78,28 @@ bool containsPowerKey(const Keyboard_Class::KeysState& state) {
     return false;
 }
 
-void sendLgPower() {
+void sendCommand(TvCommand command, const char* commandName) {
+    const TvProfileEntry* entry = tvProfile.find(command);
+    if (entry == nullptr) {
+        drawScreen(String(commandName) + " unavailable", RED);
+        return;
+    }
+
     Serial.printf(
-        "Sending LG power: protocol=NEC address=0x%02X command=0x%02X repeats=%d pin=%u\n",
-        kLgPowerCode.address,
-        kLgPowerCode.command,
-        kLgPowerCode.repeats,
+        "Sending %s %s: protocol=%u address=0x%02X command=0x%02X repeats=%d pin=%u\n",
+        tvProfile.brand(),
+        commandName,
+        static_cast<unsigned int>(entry->code.protocol),
+        entry->code.address,
+        entry->code.command,
+        entry->code.repeats,
         kIrTxPin
     );
+    Serial.printf("Profile code status: %s\n", verificationLabel(entry->verification));
 
-    const SendResult result = irTransmitter.send(kLgPowerCode);
+    const SendResult result = irTransmitter.send(entry->code);
     if (result == SendResult::Success) {
-        drawScreen("Power IR sent", GREEN);
+        drawScreen(String(commandName) + " IR sent", GREEN);
     } else {
         drawScreen("Unsupported protocol", RED);
     }
@@ -103,7 +116,8 @@ void setup() {
 
     drawScreen("Ready");
 
-    Serial.println("GlobalController TV-003 ready");
+    Serial.println("GlobalController TV-004 ready");
+    Serial.printf("Loaded profile: %s %s\n", tvProfile.brand(), tvProfile.model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
 }
 
@@ -114,7 +128,7 @@ void loop() {
         const auto state = M5Cardputer.Keyboard.keysState();
 
         if (containsPowerKey(state)) {
-            sendLgPower();
+            sendCommand(TvCommand::Power, "Power");
         } else {
             const String description = describeKeyboardState(state);
             Serial.print("Keyboard input: ");
