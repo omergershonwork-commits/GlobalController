@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "app/RemoteApplication.h"
 #include "input/KeyboardCommandMapper.h"
 #include "ir/ArduinoIrTransmitter.h"
 #include "profile/Lg37Ld450Profile.h"
@@ -15,18 +16,15 @@ constexpr std::uint32_t kRepeatIntervalMs = 150;
 
 Lg37Ld450Profile tvProfile;
 ArduinoIrTransmitter irTransmitter(kIrTxPin);
-
-bool commandHeld = false;
-KeyboardCommand activeCommand{false, TvCommand::Power, "", false};
-std::uint32_t commandPressedAtMs = 0;
-std::uint32_t lastCommandSentAtMs = 0;
+RemoteApplication remoteApplication(
+    tvProfile,
+    irTransmitter,
+    kInitialRepeatDelayMs,
+    kRepeatIntervalMs
+);
 
 const char* verificationLabel(CodeVerification verification) {
     return verification == CodeVerification::VerifiedOnDevice ? "verified" : "provisional";
-}
-
-bool hasElapsed(std::uint32_t now, std::uint32_t since, std::uint32_t duration) {
-    return static_cast<std::uint32_t>(now - since) >= duration;
 }
 
 void drawScreen(const String& status, std::uint16_t statusColor = WHITE) {
@@ -53,83 +51,58 @@ void drawScreen(const String& status, std::uint16_t statusColor = WHITE) {
     display.println(status);
 }
 
-void sendCommand(const KeyboardCommand& binding) {
-    const TvProfileEntry* entry = tvProfile.find(binding.command);
-    if (entry == nullptr) {
-        drawScreen(String(binding.label) + " unavailable", RED);
-        return;
+void renderEvent(const RemoteEvent& event) {
+    switch (event.type) {
+        case RemoteEventType::None:
+            return;
+
+        case RemoteEventType::UnmappedInput:
+            drawScreen("Unmapped key");
+            return;
+
+        case RemoteEventType::CommandUnavailable:
+            drawScreen(String(event.label) + " unavailable", RED);
+            return;
+
+        case RemoteEventType::UnsupportedProtocol:
+            drawScreen("Unsupported protocol", RED);
+            return;
+
+        case RemoteEventType::CommandSent:
+            break;
     }
 
     Serial.printf(
-        "Sending %s %s: protocol=%u address=0x%02X command=0x%02X repeats=%d pin=%u\n",
+        "Sent %s %s: protocol=%u address=0x%02X command=0x%02X repeats=%d pin=%u held-repeat=%s\n",
         tvProfile.brand(),
-        binding.label,
-        static_cast<unsigned int>(entry->code.protocol),
-        entry->code.address,
-        entry->code.command,
-        entry->code.repeats,
-        kIrTxPin
+        event.label,
+        static_cast<unsigned int>(event.code.protocol),
+        event.code.address,
+        event.code.command,
+        event.code.repeats,
+        kIrTxPin,
+        event.repeated ? "yes" : "no"
     );
-    Serial.printf(
-        "Profile code status: %s; key repeat: %s\n",
-        verificationLabel(entry->verification),
-        binding.repeatable ? "enabled" : "disabled"
-    );
+    Serial.printf("Profile code status: %s\n", verificationLabel(event.verification));
 
-    const SendResult result = irTransmitter.send(entry->code);
-    if (result != SendResult::Success) {
-        drawScreen("Unsupported protocol", RED);
-        return;
-    }
-
-    if (entry->verification == CodeVerification::VerifiedOnDevice) {
-        drawScreen(String(binding.label) + " IR sent", GREEN);
-    } else {
-        drawScreen(String(binding.label) + " test sent", YELLOW);
-    }
-}
-
-void resetHeldCommand() {
-    commandHeld = false;
-    activeCommand = {false, TvCommand::Power, "", false};
+    const bool verified = event.verification == CodeVerification::VerifiedOnDevice;
+    const String suffix = event.repeated ? " repeat sent" : " IR sent";
+    drawScreen(String(event.label) + suffix, verified ? GREEN : YELLOW);
 }
 
 void handleKeyboard() {
+    const bool inputChanged = M5Cardputer.Keyboard.isChange();
     const bool pressed = M5Cardputer.Keyboard.isPressed();
-    const auto state = M5Cardputer.Keyboard.keysState();
-    const KeyboardCommand mapped = KeyboardCommandMapper::map(state);
+    const auto& state = M5Cardputer.Keyboard.keysState();
+    const CommandBinding binding = KeyboardCommandMapper::map(state);
 
-    if (!pressed) {
-        resetHeldCommand();
-        return;
-    }
-
-    if (!mapped.matched) {
-        if (M5Cardputer.Keyboard.isChange()) {
-            drawScreen("Unmapped key");
-        }
-        resetHeldCommand();
-        return;
-    }
-
-    const std::uint32_t now = millis();
-    if (!commandHeld || mapped.command != activeCommand.command) {
-        activeCommand = mapped;
-        commandHeld = true;
-        commandPressedAtMs = now;
-        lastCommandSentAtMs = now;
-        sendCommand(mapped);
-        return;
-    }
-
-    if (
-        mapped.repeatable &&
-        hasElapsed(now, commandPressedAtMs, kInitialRepeatDelayMs) &&
-        hasElapsed(now, lastCommandSentAtMs, kRepeatIntervalMs)
-    ) {
-        lastCommandSentAtMs = now;
-        sendCommand(mapped);
-    }
+    const RemoteEvent event = remoteApplication.update(
+        binding,
+        pressed,
+        inputChanged,
+        millis()
+    );
+    renderEvent(event);
 }
 }  // namespace
 
@@ -143,7 +116,7 @@ void setup() {
 
     drawScreen("Ready");
 
-    Serial.println("GlobalController TV-005 ready");
+    Serial.println("GlobalController TV-006 ready");
     Serial.printf("Loaded profile: %s %s\n", tvProfile.brand(), tvProfile.model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
     Serial.printf(
