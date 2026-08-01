@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "app/RemoteApplication.h"
 #include "profile/TvProfile.h"
 
