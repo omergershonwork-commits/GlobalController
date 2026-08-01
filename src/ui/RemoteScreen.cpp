@@ -15,11 +15,17 @@ void drawHintRow(const char* text, std::int32_t y) {
 }
 }  // namespace
 
-RemoteScreen::RemoteScreen(const TvProfile& profile) : profile_(profile) {}
+RemoteScreen::RemoteScreen(const TvProfile& profile) : profile_(&profile) {}
 
 void RemoteScreen::begin() {
     drawLayout();
     showReady();
+}
+
+void RemoteScreen::setProfile(const TvProfile& profile) {
+    profile_ = &profile;
+    drawLayout();
+    drawStatus("TV SELECTED", profile.model(), CYAN);
 }
 
 void RemoteScreen::showReady() {
@@ -67,14 +73,14 @@ void RemoteScreen::drawLayout() {
     display.setCursor(7, 25);
     display.setTextSize(1);
     display.setTextColor(WHITE, BLACK);
-    display.print(profile_.brand());
+    display.print(profile_->brand());
     display.print(' ');
-    display.print(profile_.model());
+    display.print(profile_->model());
 
     display.drawFastHLine(0, 35, display.width(), GREEN);
 
-    drawHintRow("[P] POWER  [M] MUTE  [I] INPUT", 42);
-    drawHintRow("[H] HOME   [U/J] VOLUME", 57);
+    drawHintRow("[T] TV  [P] POWER  [M] MUTE", 42);
+    drawHintRow("[I] INPUT [H] HOME [U/J] VOLUME", 57);
     drawHintRow("[R/F] CHANNEL   [WASD] MOVE", 72);
     drawHintRow("[ENTER/O] OK    [DEL/B] BACK", 87);
 
