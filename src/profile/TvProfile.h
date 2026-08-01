@@ -10,6 +10,11 @@ enum class CodeVerification : std::uint8_t {
     Provisional,
 };
 
+enum class TvCommandRoute : std::uint8_t {
+    Infrared,
+    Wifi,
+};
+
 struct TvProfileEntry {
     TvCommand command;
     IrCode code;
@@ -22,5 +27,6 @@ public:
 
     virtual const char* brand() const = 0;
     virtual const char* model() const = 0;
+    virtual TvCommandRoute routeFor(TvCommand command) const = 0;
     virtual const TvProfileEntry* find(TvCommand command) const = 0;
 };
