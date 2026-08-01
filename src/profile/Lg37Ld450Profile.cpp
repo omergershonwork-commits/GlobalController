@@ -4,8 +4,8 @@
 
 namespace {
 constexpr std::uint16_t kLgAddress = 0x04;
-constexpr std::uint16_t kXiaomiDevice = 0x86;
 constexpr std::int8_t kNoRepeats = 0;
+constexpr std::int8_t kOneRepeat = 1;
 
 constexpr TvProfileEntry kLgEntries[] = {
     {TvCommand::Power, {IrProtocol::Nec, kLgAddress, 0x08, kNoRepeats}, CodeVerification::VerifiedOnDevice},
@@ -25,18 +25,7 @@ constexpr TvProfileEntry kLgEntries[] = {
 };
 
 constexpr TvProfileEntry kXiaomiEntries[] = {
-    {TvCommand::Power, {IrProtocol::XiaomiRcmm, 0x3C, 0xCC, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::VolumeUp, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x0E, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::VolumeDown, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x0F, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::Mute, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0xA1, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::NavigateUp, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x05, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::NavigateDown, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x06, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::NavigateLeft, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x0B, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::NavigateRight, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x0C, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::Ok, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x0D, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::Back, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x07, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::Home, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x08, kNoRepeats}, CodeVerification::Provisional},
-    {TvCommand::Input, {IrProtocol::XiaomiRcmm, kXiaomiDevice, 0x01, kNoRepeats}, CodeVerification::Provisional},
+    {TvCommand::Power, {IrProtocol::XiaomiRcmm, 0x3C, 0xCC, kOneRepeat}, CodeVerification::Provisional},
 };
 
 template <std::size_t EntryCount>
