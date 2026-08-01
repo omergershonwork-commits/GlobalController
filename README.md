@@ -4,9 +4,32 @@ Portable universal-controller firmware for the **M5Stack Cardputer Adv**.
 
 The project is implemented incrementally. Every implementation step is developed on a dedicated branch and delivered through a pull request.
 
-## Current milestone: TV-005 keyboard controls
+## Current milestone: TV-006 application coordinator
 
-This milestone maps the Cardputer keyboard to the **LG 37LD450-ZA** profile and adds controlled hold-to-repeat behavior.
+This milestone moves remote-control behavior out of `main.cpp` and into a reusable `RemoteApplication` coordinator.
+
+The runtime flow is now:
+
+```text
+Cardputer keyboard
+    -> KeyboardCommandMapper
+    -> CommandBinding
+    -> RemoteApplication
+    -> TV profile lookup
+    -> IrTransmitter
+    -> built-in IR emitter
+```
+
+The coordinator owns:
+
+- command/profile resolution
+- IR transmission requests
+- unavailable and unsupported-command results
+- initial press behavior
+- hold-to-repeat timing and state
+- verified/provisional metadata in returned events
+
+`main.cpp` now focuses on hardware polling, serial diagnostics, and display rendering.
 
 ## Keyboard layout
 
@@ -24,11 +47,7 @@ This milestone maps the Cardputer keyboard to the **LG 37LD450-ZA** profile and 
 
 Repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
 
-## Verification state
-
-All 14 profile commands and the tap-versus-hold behavior were physically verified on the user's LG 37LD450-ZA during TV-005.
-
-Verified commands produce a green status message after the IR signal is transmitted.
+All 14 commands were physically verified on the user's LG 37LD450-ZA during TV-005.
 
 ## Requirements
 
@@ -59,19 +78,15 @@ When required, enter download mode by switching the Cardputer off, holding `G0`,
 pio device monitor -b 115200
 ```
 
-## TV-005 acceptance result
+## TV-006 acceptance test
 
-The following controls were verified on the physical television:
+This step is an internal refactor and should preserve TV-005 behavior:
 
-- power
-- volume up and down, including hold-to-repeat
-- mute
-- channel up and down, including hold-to-repeat
-- navigation up, down, left, and right, including hold-to-repeat
-- OK
-- back
-- home/menu
-- input/source
+1. Confirm `P` still toggles power once per press.
+2. Confirm `U` and `J` work on taps and repeat while held.
+3. Confirm one additional single-send command such as `M` or `I`.
+4. Confirm a navigation key repeats while held in a TV menu.
+5. Confirm the display and serial monitor still report the command result.
 
 ## Planned implementation sequence
 
