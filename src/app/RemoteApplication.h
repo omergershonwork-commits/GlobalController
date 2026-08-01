@@ -39,6 +39,7 @@ public:
         std::uint32_t nowMs
     );
 
+    void setProfile(const TvProfile& profile);
     void reset();
 
 private:
@@ -47,7 +48,7 @@ private:
     static RemoteEvent noEvent();
     static RemoteEvent unmappedEvent();
 
-    const TvProfile& profile_;
+    const TvProfile* profile_;
     IrTransmitter& transmitter_;
     const std::uint32_t initialRepeatDelayMs_;
     const std::uint32_t repeatIntervalMs_;

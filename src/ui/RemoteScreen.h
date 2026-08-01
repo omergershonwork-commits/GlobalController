@@ -10,6 +10,7 @@ public:
     explicit RemoteScreen(const TvProfile& profile);
 
     void begin();
+    void setProfile(const TvProfile& profile);
     void showReady();
     void showEvent(const RemoteEvent& event);
 
@@ -17,5 +18,5 @@ private:
     void drawLayout();
     void drawStatus(const char* state, const char* detail, std::uint16_t accentColor);
 
-    const TvProfile& profile_;
+    const TvProfile* profile_;
 };

@@ -10,6 +10,7 @@ enum class IrProtocol : std::uint8_t {
     Panasonic,
     Rc5,
     Rc6,
+    XiaomiRcmm,
     Raw,
 };
 

@@ -8,3 +8,10 @@ public:
     const char* model() const override;
     const TvProfileEntry* find(TvCommand command) const override;
 };
+
+class XiaomiMiTvMssp3Profile final : public TvProfile {
+public:
+    const char* brand() const override;
+    const char* model() const override;
+    const TvProfileEntry* find(TvCommand command) const override;
+};

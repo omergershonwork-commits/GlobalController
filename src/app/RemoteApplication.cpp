@@ -26,7 +26,7 @@ RemoteApplication::RemoteApplication(
     std::uint32_t initialRepeatDelayMs,
     std::uint32_t repeatIntervalMs
 )
-    : profile_(profile),
+    : profile_(&profile),
       transmitter_(transmitter),
       initialRepeatDelayMs_(initialRepeatDelayMs),
       repeatIntervalMs_(repeatIntervalMs),
@@ -71,6 +71,11 @@ RemoteEvent RemoteApplication::update(
     return noEvent();
 }
 
+void RemoteApplication::setProfile(const TvProfile& profile) {
+    profile_ = &profile;
+    reset();
+}
+
 void RemoteApplication::reset() {
     commandHeld_ = false;
     activeCommand_ = {false, TvCommand::Power, "", false};
@@ -79,7 +84,7 @@ void RemoteApplication::reset() {
 }
 
 RemoteEvent RemoteApplication::send(const CommandBinding& binding, bool repeated) {
-    const TvProfileEntry* entry = profile_.find(binding.command);
+    const TvProfileEntry* entry = profile_->find(binding.command);
     if (entry == nullptr) {
         return event(
             RemoteEventType::CommandUnavailable,

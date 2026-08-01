@@ -4,26 +4,59 @@ Portable universal-controller firmware for the **M5Stack Cardputer Adv**.
 
 The project is implemented incrementally. Every implementation step is developed on a dedicated branch and delivered through a pull request.
 
-## Current milestone: TV-007 remote interface
+## Current milestone: TV-008 Xiaomi multi-profile support
 
-This milestone adds a dedicated `RemoteScreen` presentation layer and replaces the development-oriented text screen with a stable remote-control dashboard.
+This milestone keeps the physically verified **LG 37LD450-ZA** profile and adds limited infrared support for the Xiaomi Android TV hardware identifier **MiTV-MSSP3**.
 
-The display now contains:
+Press `T` to cycle between the installed television profiles:
 
-- the active television brand and model
-- the complete keyboard control map
-- a dedicated status area that updates without redrawing the full screen
-- distinct feedback for ready, command sent, hold repeat, unmapped input, unavailable commands, and IR protocol errors
-- automatic return to `READY` when the pressed key is released
+```text
+LG 37LD450-ZA
+Xiaomi MiTV-MSSP3
+```
 
-The runtime flow remains:
+The active television is displayed below the `GlobalController` heading.
+
+## Xiaomi implementation
+
+Physical testing showed that the MiTV-MSSP3 accepts the Xiaomi power command through infrared, but the normal navigation, volume, mute, home, back, OK, input, and channel commands do not react to infrared. These controls are therefore treated as Bluetooth or network controls rather than guessed IR codes.
+
+The Xiaomi IR profile now contains only:
+
+- power, sent as a 20-bit Xiaomi RC-MM-style frame at 36 kHz
+- one additional complete frame to improve borderline reception
+
+Every non-power key displays `UNAVAILABLE` in Xiaomi mode and sends no infrared signal.
+
+The Xiaomi power command remains `Provisional` until repeated physical testing confirms reliable operation without double toggling. The screen therefore displays `TEST SIGNAL` in yellow after transmission.
+
+Full Xiaomi control is planned as a separate transport using the Android TV Remote protocol over Wi-Fi or a Bluetooth-compatible implementation. Voice control is outside the current IR milestone.
+
+## Keyboard layout
+
+| Cardputer key | LG action | Xiaomi IR action |
+|---|---|---|
+| `T` | Select next TV profile | Select next TV profile |
+| `P` | Power | Power test signal |
+| `M` | Mute | Unavailable over IR |
+| `U` / `J` | Volume up / down | Unavailable over IR |
+| `R` / `F` | Channel up / down | Unavailable over IR |
+| `W` / `A` / `S` / `D` | Navigation | Unavailable over IR |
+| `Enter` or `O` | OK | Unavailable over IR |
+| `Delete` or `B` | Back | Unavailable over IR |
+| `H` | Home/menu | Unavailable over IR |
+| `I` | Input source | Unavailable over IR |
+
+LG repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
+
+## Runtime flow
 
 ```text
 Cardputer keyboard
-    -> KeyboardCommandMapper
+    -> profile selection or KeyboardCommandMapper
     -> CommandBinding
     -> RemoteApplication
-    -> TV profile lookup
+    -> active TV profile lookup
     -> IrTransmitter
     -> built-in IR emitter
 
@@ -32,28 +65,18 @@ RemoteEvent
     -> Cardputer display
 ```
 
-## Keyboard layout
+## Verification state
 
-| Cardputer key | TV action | Hold repeats |
-|---|---|---:|
-| `P` | Power | No |
-| `M` | Mute | No |
-| `U` / `J` | Volume up / down | Yes |
-| `R` / `F` | Channel up / down | Yes |
-| `W` / `A` / `S` / `D` | Navigate up / left / down / right | Yes |
-| `Enter` or `O` | OK | No |
-| `Delete` or `B` | Back | No |
-| `H` | Home/menu | No |
-| `I` | Input source | No |
-
-Repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
-
-All 14 commands were physically verified on the user's LG 37LD450-ZA during TV-005. TV-006 verified that the coordinator refactor preserved the same behavior.
+- All 14 LG commands and their hold behavior are physically verified on the user's LG 37LD450-ZA.
+- The TV-006 coordinator and TV-007 dashboard regressions are physically verified.
+- Xiaomi MiTV-MSSP3 power reacted through infrared but was inconsistent with one frame.
+- Xiaomi non-power commands did not react through infrared and were removed from the profile.
+- The revised two-frame Xiaomi power signal is pending hardware verification.
 
 ## Requirements
 
 - M5Stack Cardputer Adv
-- LG 37LD450-ZA television
+- LG 37LD450-ZA and/or Xiaomi MiTV-MSSP3 television
 - USB-C data cable
 - PlatformIO Core 6.1.19 or the PlatformIO IDE extension
 
@@ -79,16 +102,15 @@ When required, enter download mode by switching the Cardputer off, holding `G0`,
 pio device monitor -b 115200
 ```
 
-## TV-007 acceptance test
+## Revised TV-008 acceptance test
 
-1. Confirm the dashboard fits on screen and all four control rows are readable.
-2. Confirm the bottom status area initially displays `READY`.
-3. Press `P` and confirm the status changes to `COMMAND SENT` and `Power`.
-4. Hold `U` or `J` and confirm the status changes to `HOLD REPEAT` during repeated transmissions.
-5. Release the key and confirm the status returns to `READY`.
-6. Press an unmapped key such as `Q` and confirm `UNMAPPED KEY` appears.
-7. Confirm power, one volume command, and one navigation command still control the television correctly.
-8. Confirm repeated commands update only the bottom status area without obvious full-screen flashing.
+1. Start with LG selected and confirm one previously verified LG command still works.
+2. Press `T` and confirm the heading changes to `Xiaomi MiTV-MSSP3`.
+3. Aim directly at the Xiaomi receiver and press `P` ten times, waiting for each power transition to finish.
+4. Record the number of successful power actions out of ten.
+5. Confirm that one press never produces two power transitions.
+6. Press a non-power key and confirm the display shows `UNAVAILABLE` and the TV does not react.
+7. Press `T` again and confirm the controller returns to the LG profile.
 
 ## Planned implementation sequence
 
@@ -98,8 +120,10 @@ pio device monitor -b 115200
 - [x] TV-004: first complete TV profile
 - [x] TV-005: keyboard command mapping and hold/repeat behavior
 - [x] TV-006: remote application coordinator
-- [ ] TV-007: main remote UI and feedback states
-- [ ] TV-008: numeric channel entry and native tests
+- [x] TV-007: main remote UI and feedback states
+- [ ] TV-008: Xiaomi MiTV-MSSP3 profile selection and reliable IR power
+- [ ] TV-009: Android TV Wi-Fi remote transport for Xiaomi controls
+- [ ] TV-010: numeric channel entry and native tests
 
 ## Project configuration
 

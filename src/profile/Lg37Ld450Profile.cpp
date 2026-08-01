@@ -1,10 +1,13 @@
 #include "Lg37Ld450Profile.h"
 
+#include <cstddef>
+
 namespace {
 constexpr std::uint16_t kLgAddress = 0x04;
 constexpr std::int8_t kNoRepeats = 0;
+constexpr std::int8_t kOneRepeat = 1;
 
-constexpr TvProfileEntry kEntries[] = {
+constexpr TvProfileEntry kLgEntries[] = {
     {TvCommand::Power, {IrProtocol::Nec, kLgAddress, 0x08, kNoRepeats}, CodeVerification::VerifiedOnDevice},
     {TvCommand::VolumeUp, {IrProtocol::Nec, kLgAddress, 0x02, kNoRepeats}, CodeVerification::VerifiedOnDevice},
     {TvCommand::VolumeDown, {IrProtocol::Nec, kLgAddress, 0x03, kNoRepeats}, CodeVerification::VerifiedOnDevice},
@@ -20,6 +23,24 @@ constexpr TvProfileEntry kEntries[] = {
     {TvCommand::Home, {IrProtocol::Nec, kLgAddress, 0x43, kNoRepeats}, CodeVerification::VerifiedOnDevice},
     {TvCommand::Input, {IrProtocol::Nec, kLgAddress, 0x0B, kNoRepeats}, CodeVerification::VerifiedOnDevice},
 };
+
+constexpr TvProfileEntry kXiaomiEntries[] = {
+    {TvCommand::Power, {IrProtocol::XiaomiRcmm, 0x3C, 0xCC, kOneRepeat}, CodeVerification::Provisional},
+};
+
+template <std::size_t EntryCount>
+const TvProfileEntry* findEntry(
+    const TvProfileEntry (&entries)[EntryCount],
+    TvCommand command
+) {
+    for (const auto& entry : entries) {
+        if (entry.command == command) {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
 }  // namespace
 
 const char* Lg37Ld450Profile::brand() const {
@@ -31,11 +52,17 @@ const char* Lg37Ld450Profile::model() const {
 }
 
 const TvProfileEntry* Lg37Ld450Profile::find(TvCommand command) const {
-    for (const auto& entry : kEntries) {
-        if (entry.command == command) {
-            return &entry;
-        }
-    }
+    return findEntry(kLgEntries, command);
+}
 
-    return nullptr;
+const char* XiaomiMiTvMssp3Profile::brand() const {
+    return "Xiaomi";
+}
+
+const char* XiaomiMiTvMssp3Profile::model() const {
+    return "MiTV-MSSP3";
+}
+
+const TvProfileEntry* XiaomiMiTvMssp3Profile::find(TvCommand command) const {
+    return findEntry(kXiaomiEntries, command);
 }
