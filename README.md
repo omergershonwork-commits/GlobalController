@@ -6,7 +6,7 @@ The project is implemented incrementally. Every implementation step is developed
 
 ## Current milestone: TV-008 Xiaomi multi-profile support
 
-This milestone keeps the physically verified **LG 37LD450-ZA** profile and adds a provisional infrared profile for the Xiaomi Android TV hardware identifier **MiTV-MSSP3**.
+This milestone keeps the physically verified **LG 37LD450-ZA** profile and adds limited infrared support for the Xiaomi Android TV hardware identifier **MiTV-MSSP3**.
 
 Press `T` to cycle between the installed television profiles:
 
@@ -19,39 +19,35 @@ The active television is displayed below the `GlobalController` heading.
 
 ## Xiaomi implementation
 
-The Xiaomi profile uses a 20-bit Xiaomi RC-MM-style infrared encoder at 36 kHz. The encoder builds the device byte, function byte, four-bit checksum, and four-level symbol timings before sending the raw frame through GPIO 44.
+Physical testing showed that the MiTV-MSSP3 accepts the Xiaomi power command through infrared, but the normal navigation, volume, mute, home, back, OK, input, and channel commands do not react to infrared. These controls are therefore treated as Bluetooth or network controls rather than guessed IR codes.
 
-Provisional Xiaomi commands:
+The Xiaomi IR profile now contains only:
 
-- power
-- volume up and down
-- mute
-- navigation up, down, left, and right
-- OK
-- back
-- home
-- input
+- power, sent as a 20-bit Xiaomi RC-MM-style frame at 36 kHz
+- one additional complete frame to improve borderline reception
 
-Channel up and down are intentionally unavailable in the Xiaomi profile because they have not yet been identified confidently for this hardware family. Pressing `R` or `F` while Xiaomi is selected displays `UNAVAILABLE` and sends nothing.
+Every non-power key displays `UNAVAILABLE` in Xiaomi mode and sends no infrared signal.
 
-All Xiaomi codes remain `Provisional` until tested on the physical MiTV-MSSP3 television. The screen therefore displays `TEST SIGNAL` in yellow after a Xiaomi command is transmitted.
+The Xiaomi power command remains `Provisional` until repeated physical testing confirms reliable operation without double toggling. The screen therefore displays `TEST SIGNAL` in yellow after transmission.
+
+Full Xiaomi control is planned as a separate transport using the Android TV Remote protocol over Wi-Fi or a Bluetooth-compatible implementation. Voice control is outside the current IR milestone.
 
 ## Keyboard layout
 
-| Cardputer key | Action | Hold repeats |
-|---|---|---:|
-| `T` | Select next TV profile | No |
-| `P` | Power | No |
-| `M` | Mute | No |
-| `U` / `J` | Volume up / down | Yes |
-| `R` / `F` | Channel up / down | Yes when supported by profile |
-| `W` / `A` / `S` / `D` | Navigate up / left / down / right | Yes |
-| `Enter` or `O` | OK | No |
-| `Delete` or `B` | Back | No |
-| `H` | Home/menu | No |
-| `I` | Input source | No |
+| Cardputer key | LG action | Xiaomi IR action |
+|---|---|---|
+| `T` | Select next TV profile | Select next TV profile |
+| `P` | Power | Power test signal |
+| `M` | Mute | Unavailable over IR |
+| `U` / `J` | Volume up / down | Unavailable over IR |
+| `R` / `F` | Channel up / down | Unavailable over IR |
+| `W` / `A` / `S` / `D` | Navigation | Unavailable over IR |
+| `Enter` or `O` | OK | Unavailable over IR |
+| `Delete` or `B` | Back | Unavailable over IR |
+| `H` | Home/menu | Unavailable over IR |
+| `I` | Input source | Unavailable over IR |
 
-Repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
+LG repeatable commands send immediately, wait 450 ms, and then repeat every 150 ms while the key remains held.
 
 ## Runtime flow
 
@@ -73,7 +69,9 @@ RemoteEvent
 
 - All 14 LG commands and their hold behavior are physically verified on the user's LG 37LD450-ZA.
 - The TV-006 coordinator and TV-007 dashboard regressions are physically verified.
-- Xiaomi MiTV-MSSP3 commands are provisional pending hardware testing.
+- Xiaomi MiTV-MSSP3 power reacted through infrared but was inconsistent with one frame.
+- Xiaomi non-power commands did not react through infrared and were removed from the profile.
+- The revised two-frame Xiaomi power signal is pending hardware verification.
 
 ## Requirements
 
@@ -104,16 +102,15 @@ When required, enter download mode by switching the Cardputer off, holding `G0`,
 pio device monitor -b 115200
 ```
 
-## TV-008 acceptance test
+## Revised TV-008 acceptance test
 
 1. Start with LG selected and confirm one previously verified LG command still works.
 2. Press `T` and confirm the heading changes to `Xiaomi MiTV-MSSP3`.
-3. Aim the Cardputer's IR edge toward the Xiaomi TV and test `P`.
-4. Test `U`, `J`, `M`, `W`, `A`, `S`, `D`, `Enter`, `Delete`, `H`, and `I`.
-5. For each Xiaomi command, record `worked`, `wrong action`, or `no reaction`.
-6. Confirm `R` and `F` display `UNAVAILABLE` in Xiaomi mode and do not transmit.
-7. Hold volume and navigation keys and confirm repeat behavior is usable.
-8. Press `T` again and confirm the controller returns to the LG profile.
+3. Aim directly at the Xiaomi receiver and press `P` ten times, waiting for each power transition to finish.
+4. Record the number of successful power actions out of ten.
+5. Confirm that one press never produces two power transitions.
+6. Press a non-power key and confirm the display shows `UNAVAILABLE` and the TV does not react.
+7. Press `T` again and confirm the controller returns to the LG profile.
 
 ## Planned implementation sequence
 
@@ -124,8 +121,9 @@ pio device monitor -b 115200
 - [x] TV-005: keyboard command mapping and hold/repeat behavior
 - [x] TV-006: remote application coordinator
 - [x] TV-007: main remote UI and feedback states
-- [ ] TV-008: Xiaomi MiTV-MSSP3 profile and multi-TV selection
-- [ ] TV-009: numeric channel entry and native tests
+- [ ] TV-008: Xiaomi MiTV-MSSP3 profile selection and reliable IR power
+- [ ] TV-009: Android TV Wi-Fi remote transport for Xiaomi controls
+- [ ] TV-010: numeric channel entry and native tests
 
 ## Project configuration
 
