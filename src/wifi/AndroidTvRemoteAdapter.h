@@ -10,6 +10,7 @@
 enum class AndroidTvRemoteState : std::uint8_t {
     Disabled,
     WifiConnecting,
+    TvDiscovering,
     RemoteConnecting,
     PairingConnecting,
     PairingCodeRequired,
@@ -22,7 +23,7 @@ class AndroidTvRemoteAdapter final {
 public:
     AndroidTvRemoteAdapter();
 
-    void begin(const char* ssid, const char* password, const IPAddress& tvIp);
+    void begin(const char* ssid, const char* password);
     void loop();
 
     bool submitPairingCode(const String& code);
@@ -35,6 +36,8 @@ public:
     const char* stateLabel() const;
 
 private:
+    void startDiscovery();
+    bool discoverTv();
     void connectRemote();
     void startPairing();
     static bool toRemoteKey(TvCommand command, Remote__RemoteKeyCode& keyCode);
@@ -43,7 +46,10 @@ private:
     PairingManager pairingManager_;
     AndroidTvRemoteState state_;
     IPAddress tvIp_;
+    std::uint16_t remotePort_;
     bool configured_;
     bool pairingCodeSubmitted_;
+    bool mdnsStarted_;
+    unsigned long lastDiscoveryAttemptMs_;
     char pairingServiceName_[24];
 };
