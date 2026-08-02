@@ -12,12 +12,14 @@ _ARDUINO_INCLUDE_PATTERN = re.compile(
     r'^[ \t]*#[ \t]*include[ \t]*[<"]Arduino\.h[>"][ \t]*(?://.*)?(?:\r?\n|$)',
     re.MULTILINE,
 )
-_WOLFSSL_SERIAL_DEFINITION_PATTERN = re.compile(
-    r'^(?P<indent>[ \t]*)int[ \t]+wolfSSL_Arduino_Serial_Print(?=[ \t]*\()',
+_WOLFSSL_SERIAL_SIGNATURE_PATTERN = re.compile(
+    r'^(?P<indent>[ \t]*)(?:(?:static[ \t]+)?inline[ \t]+)?int[ \t]+'
+    r'wolfSSL_Arduino_Serial_Print[ \t]*\([^)]*\)[ \t]*',
     re.MULTILINE,
 )
-_WOLFSSL_INLINE_SERIAL_DEFINITION_PATTERN = re.compile(
-    r'^[ \t]*inline[ \t]+int[ \t]+wolfSSL_Arduino_Serial_Print(?=[ \t]*\()',
+_WOLFSSL_SERIAL_DECLARATION_PATTERN = re.compile(
+    r'^[ \t]*int[ \t]+wolfSSL_Arduino_Serial_Print[ \t]*'
+    r'\([ \t]*const[ \t]+char\s*\*[ \t]*const[ \t]+s[ \t]*\)[ \t]*;[ \t]*$',
     re.MULTILINE,
 )
 _MARKER_FILE = ".globalcontroller_compatibility_patch_applied"
@@ -77,7 +79,23 @@ def ensure_arduino_serial_declaration(dependency_root: Path) -> bool:
     return True
 
 
-def ensure_wolfssl_serial_helper_is_inline(wolfssl_root: Path) -> bool:
+def find_closing_brace(content: str, opening_brace_index: int) -> int:
+    depth = 0
+    for index in range(opening_brace_index, len(content)):
+        character = content[index]
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+
+    raise RuntimeError(
+        "wolfSSL_Arduino_Serial_Print has an unterminated function body"
+    )
+
+
+def ensure_wolfssl_serial_helper_is_declaration(wolfssl_root: Path) -> bool:
     path = wolfssl_root / _WOLFSSL_HEADER_PATH
     if not path.exists():
         raise RuntimeError(
@@ -85,26 +103,58 @@ def ensure_wolfssl_serial_helper_is_inline(wolfssl_root: Path) -> bool:
         )
 
     content = path.read_text(encoding="utf-8")
-    if _WOLFSSL_INLINE_SERIAL_DEFINITION_PATTERN.search(content):
-        return False
-
-    patched_content, replacements = _WOLFSSL_SERIAL_DEFINITION_PATTERN.subn(
-        r"\g<indent>inline int wolfSSL_Arduino_Serial_Print",
-        content,
-        count=1,
-    )
-    if replacements != 1:
+    signature_match = _WOLFSSL_SERIAL_SIGNATURE_PATTERN.search(content)
+    if signature_match is None:
         raise RuntimeError(
-            "Expected wolfSSL_Arduino_Serial_Print definition was not found in "
+            "Expected wolfSSL_Arduino_Serial_Print signature was not found in "
             "Arduino-wolfSSL src/wolfssl.h"
         )
 
-    path.write_text(patched_content, encoding="utf-8")
+    suffix_index = signature_match.end()
+    while suffix_index < len(content) and content[suffix_index].isspace():
+        suffix_index += 1
+
+    canonical_declaration = (
+        signature_match.group("indent")
+        + "int wolfSSL_Arduino_Serial_Print(const char* const s);"
+    )
+
+    if suffix_index < len(content) and content[suffix_index] == ";":
+        current_declaration = content[signature_match.start():suffix_index + 1]
+        if current_declaration == canonical_declaration:
+            return False
+
+        path.write_text(
+            content[:signature_match.start()]
+            + canonical_declaration
+            + content[suffix_index + 1:],
+            encoding="utf-8",
+        )
+        return True
+
+    if suffix_index >= len(content) or content[suffix_index] != "{":
+        raise RuntimeError(
+            "wolfSSL_Arduino_Serial_Print is neither a declaration nor a function definition"
+        )
+
+    closing_brace_index = find_closing_brace(content, suffix_index)
+    replacement_end = closing_brace_index + 1
+    while replacement_end < len(content) and content[replacement_end] in " \t":
+        replacement_end += 1
+    if replacement_end < len(content) and content[replacement_end] == ";":
+        replacement_end += 1
+
+    path.write_text(
+        content[:signature_match.start()]
+        + canonical_declaration
+        + content[replacement_end:],
+        encoding="utf-8",
+    )
 
     verified_content = path.read_text(encoding="utf-8")
-    if not _WOLFSSL_INLINE_SERIAL_DEFINITION_PATTERN.search(verified_content):
+    if not _WOLFSSL_SERIAL_DECLARATION_PATTERN.search(verified_content):
         raise RuntimeError(
-            "Failed to make wolfSSL_Arduino_Serial_Print inline"
+            "Failed to replace wolfSSL_Arduino_Serial_Print with a declaration"
         )
 
     return True
@@ -138,7 +188,7 @@ def patch_dependencies() -> None:
 
     patched_include_files = remove_wifi_client_secure_includes(android_tv_root)
     added_arduino_include = ensure_arduino_serial_declaration(android_tv_root)
-    made_wolfssl_helper_inline = ensure_wolfssl_serial_helper_is_inline(wolfssl_root)
+    changed_wolfssl_helper = ensure_wolfssl_serial_helper_is_declaration(wolfssl_root)
 
     marker_path = android_tv_root / _MARKER_FILE
     marker_path.write_text("compatible\n", encoding="utf-8")
@@ -153,9 +203,9 @@ def patch_dependencies() -> None:
         changes.append(
             "added Arduino.h to src/remote/RemoteMessageManager.cpp for Serial"
         )
-    if made_wolfssl_helper_inline:
+    if changed_wolfssl_helper:
         changes.append(
-            "made Arduino-wolfSSL wolfSSL_Arduino_Serial_Print inline"
+            "replaced Arduino-wolfSSL serial helper definition with a declaration"
         )
 
     if changes:
