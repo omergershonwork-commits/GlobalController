@@ -1,8 +1,11 @@
 #pragma once
 
-// Copy this file to include/local_config.h and replace the values locally.
-// local_config.h is ignored by Git so credentials are never committed.
+// Optional build-time Wi-Fi defaults.
+// Copy this file to include/local_config.h only when you prefer build-time
+// credentials. local_config.h is ignored by Git and must never be committed.
+//
+// The Xiaomi TV address is discovered automatically through mDNS, so no IP
+// address belongs in this file.
 
 #define GC_WIFI_SSID "YOUR_WIFI_NAME"
 #define GC_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
-#define GC_XIAOMI_TV_IP "192.168.1.100"
