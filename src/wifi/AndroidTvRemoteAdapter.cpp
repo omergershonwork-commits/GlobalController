@@ -2,6 +2,7 @@
 
 #include <ESPmDNS.h>
 
+#include <cstdio>
 #include <cstring>
 
 #include "remote/RemoteKeycode.h"
