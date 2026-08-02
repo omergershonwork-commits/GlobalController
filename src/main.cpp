@@ -93,10 +93,13 @@ void showPairingCode() {
 void showWifiState(AndroidTvRemoteState state) {
     switch (state) {
         case AndroidTvRemoteState::Disabled:
-            remoteScreen.showMessage("WIFI SETUP", "Create include/local_config.h", YELLOW);
+            remoteScreen.showMessage("WIFI SETUP", "Add local Wi-Fi credentials", YELLOW);
             return;
         case AndroidTvRemoteState::WifiConnecting:
             remoteScreen.showMessage("WIFI CONNECT", "Joining configured network", YELLOW);
+            return;
+        case AndroidTvRemoteState::TvDiscovering:
+            remoteScreen.showMessage("TV SEARCH", "Finding Android TV automatically", YELLOW);
             return;
         case AndroidTvRemoteState::RemoteConnecting:
             remoteScreen.showMessage("TV CONNECT", "Opening Android TV remote", YELLOW);
@@ -166,7 +169,7 @@ void logEvent(const RemoteEvent& event) {
             return;
 
         case RemoteEventType::WifiNotConfigured:
-            Serial.printf("Wi-Fi command needs local configuration: %s\n", event.label);
+            Serial.printf("Wi-Fi command needs local credentials: %s\n", event.label);
             return;
 
         case RemoteEventType::WifiNotReady:
@@ -280,19 +283,9 @@ void handleKeyboard() {
 }
 
 void initializeWifiRemote() {
-    IPAddress tvIp;
-    if (
-        !kDeviceConfig.hasWifiCredentials() ||
-        !kDeviceConfig.parseXiaomiTvIp(tvIp)
-    ) {
-        androidTvRemote.begin("", "", IPAddress(0, 0, 0, 0));
-        return;
-    }
-
     androidTvRemote.begin(
         kDeviceConfig.wifiSsid,
-        kDeviceConfig.wifiPassword,
-        tvIp
+        kDeviceConfig.wifiPassword
     );
 }
 }  // namespace
