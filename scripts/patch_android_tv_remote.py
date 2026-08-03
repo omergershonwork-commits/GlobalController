@@ -25,7 +25,19 @@ _WOLFSSL_SERIAL_DECLARATION_PATTERN = re.compile(
 _MARKER_FILE = ".globalcontroller_compatibility_patch_applied"
 _SOURCE_SUFFIXES = {".h", ".hpp", ".cpp"}
 _REMOTE_MESSAGE_MANAGER_PATH = Path("src/remote/RemoteMessageManager.cpp")
+_PAIRING_MANAGER_PATH = Path("src/pairing/PairingManager.cpp")
 _WOLFSSL_HEADER_PATH = Path("src/wolfssl.h")
+_PAIRING_UNPACK_STATEMENT = (
+    "        Pairing__PairingMessage *response = "
+    "pairing__pairing_message__unpack(NULL, chunks.size() - 1, chunks.data() + 1);\n"
+)
+_PAIRING_NULL_GUARD = (
+    "        if (response == nullptr) {\n"
+    "            Serial.println(\"[ERROR]: Failed to decode Android TV pairing response\");\n"
+    "            chunks.clear();\n"
+    "            return;\n"
+    "        }\n"
+)
 
 
 def source_files(dependency_root: Path):
@@ -76,6 +88,33 @@ def ensure_arduino_serial_declaration(dependency_root: Path) -> bool:
         return False
 
     path.write_text("#include <Arduino.h>\n" + content, encoding="utf-8")
+    return True
+
+
+def harden_pairing_response_unpack(dependency_root: Path) -> bool:
+    path = dependency_root / _PAIRING_MANAGER_PATH
+    if not path.exists():
+        raise RuntimeError(
+            "AndroidTvRemote PairingManager.cpp is missing from the pinned dependency"
+        )
+
+    content = path.read_text(encoding="utf-8")
+    if _PAIRING_NULL_GUARD.strip() in content:
+        return False
+
+    if _PAIRING_UNPACK_STATEMENT not in content:
+        raise RuntimeError(
+            "Expected AndroidTvRemote pairing unpack statement was not found"
+        )
+
+    path.write_text(
+        content.replace(
+            _PAIRING_UNPACK_STATEMENT,
+            _PAIRING_UNPACK_STATEMENT + _PAIRING_NULL_GUARD,
+            1,
+        ),
+        encoding="utf-8",
+    )
     return True
 
 
@@ -188,6 +227,7 @@ def patch_dependencies() -> None:
 
     patched_include_files = remove_wifi_client_secure_includes(android_tv_root)
     added_arduino_include = ensure_arduino_serial_declaration(android_tv_root)
+    hardened_pairing_unpack = harden_pairing_response_unpack(android_tv_root)
     changed_wolfssl_helper = ensure_wolfssl_serial_helper_is_declaration(wolfssl_root)
 
     marker_path = android_tv_root / _MARKER_FILE
@@ -202,6 +242,10 @@ def patch_dependencies() -> None:
     if added_arduino_include:
         changes.append(
             "added Arduino.h to src/remote/RemoteMessageManager.cpp for Serial"
+        )
+    if hardened_pairing_unpack:
+        changes.append(
+            "added a null guard for malformed Android TV pairing responses"
         )
     if changed_wolfssl_helper:
         changes.append(
