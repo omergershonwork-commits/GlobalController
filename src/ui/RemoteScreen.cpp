@@ -20,6 +20,16 @@ void drawHintRow(const char* text, std::int32_t y) {
     display.setTextColor(WHITE, BLACK);
     display.print(text);
 }
+
+void drawMetricLine(const char* label, const char* value, std::int32_t y) {
+    auto& display = M5Cardputer.Display;
+    display.setTextSize(1);
+    display.setTextColor(CYAN, BLACK);
+    display.setCursor(7, y);
+    display.print(label);
+    display.setTextColor(WHITE, BLACK);
+    display.print(value);
+}
 }  // namespace
 
 RemoteScreen::RemoteScreen(const TvProfile& profile)
@@ -144,6 +154,105 @@ void RemoteScreen::showIndicators(
     drawIndicators();
 }
 
+void RemoteScreen::showMetrics(
+    const char* profile,
+    const char* wifiState,
+    bool wifiActive,
+    std::int32_t wifiRssi,
+    std::int32_t batteryPercent,
+    bool charging,
+    std::uint32_t freeHeapBytes,
+    unsigned long maxUiLoopMs,
+    unsigned long maxNetworkTickMs,
+    std::uint32_t networkStackFreeBytes,
+    std::uint32_t networkStackBytes,
+    unsigned long uptimeMs
+) {
+    auto& display = M5Cardputer.Display;
+    display.setTextWrap(false);
+    display.fillScreen(BLACK);
+
+    display.setCursor(7, 4);
+    display.setTextSize(2);
+    display.setTextColor(GREEN, BLACK);
+    display.print("LIVE METRICS");
+
+    display.setCursor(174, 8);
+    display.setTextSize(1);
+    display.setTextColor(YELLOW, BLACK);
+    display.print("[G] BACK");
+
+    display.drawFastHLine(0, 23, display.width(), GREEN);
+
+    char value[80];
+
+    std::snprintf(value, sizeof(value), "%s", profile == nullptr ? "UNKNOWN" : profile);
+    drawMetricLine("TV: ", value, 29);
+
+    std::snprintf(
+        value,
+        sizeof(value),
+        "%s%s",
+        wifiState == nullptr ? "UNKNOWN" : wifiState,
+        wifiActive ? "" : " (off)"
+    );
+    drawMetricLine("Wi-Fi: ", value, 42);
+
+    if (wifiActive && wifiRssi != 0) {
+        std::snprintf(value, sizeof(value), "%ld dBm", static_cast<long>(wifiRssi));
+    } else {
+        std::snprintf(value, sizeof(value), "not connected");
+    }
+    drawMetricLine("Signal: ", value, 55);
+
+    std::snprintf(
+        value,
+        sizeof(value),
+        "%lu KB",
+        static_cast<unsigned long>(freeHeapBytes / 1024U)
+    );
+    drawMetricLine("Free heap: ", value, 68);
+
+    std::snprintf(
+        value,
+        sizeof(value),
+        "UI %lu ms  NET %lu ms",
+        maxUiLoopMs,
+        maxNetworkTickMs
+    );
+    drawMetricLine("Max tick: ", value, 81);
+
+    std::snprintf(
+        value,
+        sizeof(value),
+        "%lu / %lu bytes free",
+        static_cast<unsigned long>(networkStackFreeBytes),
+        static_cast<unsigned long>(networkStackBytes)
+    );
+    drawMetricLine("Net stack: ", value, 94);
+
+    if (batteryPercent >= 0 && batteryPercent <= 100) {
+        std::snprintf(
+            value,
+            sizeof(value),
+            "%ld%%%s",
+            static_cast<long>(batteryPercent),
+            charging ? " charging" : ""
+        );
+    } else {
+        std::snprintf(value, sizeof(value), "unknown");
+    }
+    drawMetricLine("Battery: ", value, 107);
+
+    std::snprintf(
+        value,
+        sizeof(value),
+        "%lu s",
+        uptimeMs / 1000UL
+    );
+    drawMetricLine("Uptime: ", value, 120);
+}
+
 void RemoteScreen::drawLayout() {
     auto& display = M5Cardputer.Display;
 
@@ -165,9 +274,9 @@ void RemoteScreen::drawLayout() {
     drawIndicators();
     display.drawFastHLine(0, 35, display.width(), GREEN);
 
-    drawHintRow("[T] TV [N] WIFI [P] POWER", 42);
-    drawHintRow("[I] INPUT [H] HOME [U/J] VOLUME", 57);
-    drawHintRow("[R/F] CHANNEL   [WASD] MOVE", 72);
+    drawHintRow("[T] TV [N] WIFI [G] METRICS", 42);
+    drawHintRow("[P] POWER [I] INPUT [H] HOME", 57);
+    drawHintRow("[R/F] CH [U/J] VOL [WASD] MOVE", 72);
     drawHintRow("[ENTER/O] OK    [DEL/B] BACK", 87);
 
     display.drawFastHLine(0, kStatusTop, display.width(), WHITE);
