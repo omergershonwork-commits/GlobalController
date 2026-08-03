@@ -10,13 +10,13 @@
 #include "profile/Lg37Ld450Profile.h"
 #include "ui/RemoteScreen.h"
 #include "wifi/AndroidTvRemoteAdapter.h"
+#include "wifi/AndroidTvRemoteRuntime.h"
 
 namespace {
 constexpr unsigned long kSerialBaud = 115200;
 constexpr unsigned long kLoopDelayMs = 5;
 constexpr unsigned long kHealthLogIntervalMs = 2000;
 constexpr unsigned long kIndicatorRefreshIntervalMs = 2000;
-constexpr unsigned long kSlowNetworkTickMs = 100;
 constexpr std::uint8_t kIrTxPin = 44;
 constexpr std::uint32_t kInitialRepeatDelayMs = 450;
 constexpr std::uint32_t kRepeatIntervalMs = 150;
@@ -30,8 +30,9 @@ constexpr std::uint8_t kProfileCount = sizeof(kProfiles) / sizeof(kProfiles[0]);
 std::uint8_t activeProfileIndex = 0;
 
 ArduinoIrTransmitter irTransmitter(kIrTxPin);
-AndroidTvRemoteAdapter androidTvRemote;
-HybridTvCommandSender commandSender(irTransmitter, androidTvRemote);
+AndroidTvRemoteAdapter androidTvAdapter;
+AndroidTvRemoteRuntime wifiRemote(androidTvAdapter);
+HybridTvCommandSender commandSender(irTransmitter, wifiRemote);
 RemoteApplication remoteApplication(
     lgProfile,
     commandSender,
@@ -42,11 +43,9 @@ RemoteScreen remoteScreen(lgProfile);
 
 AndroidTvRemoteState lastWifiState = AndroidTvRemoteState::Disabled;
 String pairingCode;
-bool wifiRemoteStarted = false;
 unsigned long lastHealthLogMs = 0;
 unsigned long lastIndicatorRefreshMs = 0;
 unsigned long maxLoopDurationMs = 0;
-unsigned long maxNetworkTickMs = 0;
 std::int32_t lastBatteryPercent = -1;
 bool lastBatteryCharging = false;
 
@@ -71,7 +70,7 @@ const char* activityLabel() {
         return "IR READY";
     }
 
-    switch (androidTvRemote.state()) {
+    switch (wifiRemote.state()) {
         case AndroidTvRemoteState::Disabled:
             return kDeviceConfig.hasWifiCredentials() ? "WIFI OFF" : "WIFI SETUP";
         case AndroidTvRemoteState::WifiConnecting:
@@ -100,7 +99,7 @@ std::uint16_t activityColor() {
         return GREEN;
     }
 
-    switch (androidTvRemote.state()) {
+    switch (wifiRemote.state()) {
         case AndroidTvRemoteState::Disabled:
         case AndroidTvRemoteState::PairingConnecting:
         case AndroidTvRemoteState::PairingCodeRequired:
@@ -143,7 +142,6 @@ bool containsProfileSwitchKey(const Keyboard_Class::KeysState& state) {
             return true;
         }
     }
-
     return false;
 }
 
@@ -153,7 +151,6 @@ bool containsNetworkToggleKey(const Keyboard_Class::KeysState& state) {
             return true;
         }
     }
-
     return false;
 }
 
@@ -167,7 +164,6 @@ char toUpperAscii(char character) {
     if (character >= 'a' && character <= 'f') {
         return static_cast<char>(character - 'a' + 'A');
     }
-
     return character;
 }
 
@@ -177,7 +173,6 @@ void showPairingCode() {
     while (detail.length() < 6 + kPairingCodeLength) {
         detail += '_';
     }
-
     remoteScreen.showMessage("PAIR CODE", detail.c_str(), YELLOW);
 }
 
@@ -191,13 +186,13 @@ void showWifiState(AndroidTvRemoteState state) {
             }
             return;
         case AndroidTvRemoteState::WifiConnecting:
-            remoteScreen.showMessage("WIFI CONNECT", "Press N to cancel", YELLOW);
+            remoteScreen.showMessage("WIFI CONNECT", "N cancels; T changes TV", CYAN);
             return;
         case AndroidTvRemoteState::TvDiscovering:
-            remoteScreen.showMessage("TV SEARCH", "Press N to cancel", YELLOW);
+            remoteScreen.showMessage("TV SEARCH", "N cancels; controls stay live", CYAN);
             return;
         case AndroidTvRemoteState::RemoteConnecting:
-            remoteScreen.showMessage("TV CONNECT", "Press N to cancel", YELLOW);
+            remoteScreen.showMessage("TV CONNECT", "N cancels; controls stay live", CYAN);
             return;
         case AndroidTvRemoteState::PairingConnecting:
             remoteScreen.showMessage("PAIRING", "Press N to cancel", YELLOW);
@@ -219,13 +214,13 @@ void showWifiState(AndroidTvRemoteState state) {
 }
 
 void updateWifiStateUi() {
-    const AndroidTvRemoteState state = androidTvRemote.state();
+    const AndroidTvRemoteState state = wifiRemote.state();
     if (state == lastWifiState) {
         return;
     }
 
     lastWifiState = state;
-    Serial.printf("Android TV remote state: %s\n", androidTvRemote.stateLabel());
+    Serial.printf("Android TV remote state: %s\n", wifiRemote.stateLabel());
     refreshIndicators(millis(), true);
 
     if (xiaomiSelected()) {
@@ -234,28 +229,27 @@ void updateWifiStateUi() {
 }
 
 void startWifiRemote() {
-    if (wifiRemoteStarted) {
+    if (wifiRemote.requested()) {
         return;
     }
 
     Serial.println("Network button: starting Android TV Wi-Fi remote");
-    androidTvRemote.begin(
-        kDeviceConfig.wifiSsid,
-        kDeviceConfig.wifiPassword
-    );
-    wifiRemoteStarted = androidTvRemote.configured();
-    lastWifiState = androidTvRemote.state();
-    showWifiState(androidTvRemote.state());
+    if (!wifiRemote.start(kDeviceConfig.wifiSsid, kDeviceConfig.wifiPassword)) {
+        remoteScreen.showMessage("WIFI ERROR", "Unable to start network task", RED);
+        return;
+    }
+
+    lastWifiState = AndroidTvRemoteState::Disabled;
+    showWifiState(AndroidTvRemoteState::WifiConnecting);
     refreshIndicators(millis(), true);
 }
 
 void cancelWifiRemote(bool updateScreen = true) {
-    if (wifiRemoteStarted) {
+    if (wifiRemote.requested()) {
         Serial.println("Network button: cancelling Android TV Wi-Fi remote");
-        androidTvRemote.cancel();
+        wifiRemote.cancel();
     }
 
-    wifiRemoteStarted = false;
     pairingCode = "";
     lastWifiState = AndroidTvRemoteState::Disabled;
     remoteApplication.reset();
@@ -273,7 +267,7 @@ void toggleWifiRemote() {
         return;
     }
 
-    if (wifiRemoteStarted) {
+    if (wifiRemote.requested()) {
         cancelWifiRemote();
     } else {
         startWifiRemote();
@@ -281,7 +275,7 @@ void toggleWifiRemote() {
 }
 
 void selectNextProfile() {
-    if (xiaomiSelected() && wifiRemoteStarted) {
+    if (xiaomiSelected() && wifiRemote.requested()) {
         cancelWifiRemote(false);
     }
 
@@ -290,7 +284,6 @@ void selectNextProfile() {
 
     remoteApplication.setProfile(profile);
     remoteScreen.setProfile(profile);
-
     Serial.printf("Selected profile: %s %s\n", profile.brand(), profile.model());
 
     if (xiaomiSelected()) {
@@ -304,31 +297,24 @@ void logEvent(const RemoteEvent& event) {
     switch (event.type) {
         case RemoteEventType::None:
             return;
-
         case RemoteEventType::UnmappedInput:
             Serial.println("Keyboard input is not mapped to a TV command");
             return;
-
         case RemoteEventType::CommandUnavailable:
             Serial.printf("TV command unavailable: %s\n", event.label);
             return;
-
         case RemoteEventType::UnsupportedProtocol:
             Serial.printf("Unsupported IR protocol for command: %s\n", event.label);
             return;
-
         case RemoteEventType::WifiNotConfigured:
             Serial.printf("Wi-Fi command needs N to start the network remote: %s\n", event.label);
             return;
-
         case RemoteEventType::WifiNotReady:
             Serial.printf("Wi-Fi remote is not ready for command: %s\n", event.label);
             return;
-
         case RemoteEventType::TransportError:
             Serial.printf("Command transport failed: %s\n", event.label);
             return;
-
         case RemoteEventType::CommandSent:
             break;
     }
@@ -336,7 +322,7 @@ void logEvent(const RemoteEvent& event) {
     const TvProfile& profile = activeProfile();
     if (event.route == TvCommandRoute::Wifi) {
         Serial.printf(
-            "Sent %s %s over Wi-Fi held-repeat=%s\n",
+            "Queued %s %s over Wi-Fi held-repeat=%s\n",
             profile.brand(),
             event.label,
             event.repeated ? "yes" : "no"
@@ -374,17 +360,14 @@ void handlePairingInput(const Keyboard_Class::KeysState& state) {
             return;
         }
 
-        if (!androidTvRemote.submitPairingCode(pairingCode)) {
-            remoteScreen.showMessage("PAIR ERROR", "Code was not accepted", RED);
+        if (!wifiRemote.submitPairingCode(pairingCode)) {
+            remoteScreen.showMessage("PAIR ERROR", "Code queue is busy", RED);
         }
         return;
     }
 
     for (const char character : state.word) {
-        if (
-            pairingCode.length() < kPairingCodeLength &&
-            isHexCharacter(character)
-        ) {
+        if (pairingCode.length() < kPairingCodeLength && isHexCharacter(character)) {
             pairingCode += toUpperAscii(character);
         }
     }
@@ -413,10 +396,7 @@ void handleKeyboard() {
         return;
     }
 
-    if (
-        xiaomiSelected() &&
-        androidTvRemote.pairingCodeRequired()
-    ) {
+    if (xiaomiSelected() && wifiRemote.pairingCodeRequired()) {
         remoteApplication.reset();
         if (pressed && inputChanged) {
             handlePairingInput(state);
@@ -446,12 +426,13 @@ void logHealthIfDue(unsigned long now) {
     }
 
     lastHealthLogMs = now;
+    const unsigned long maxNetworkTickMs = wifiRemote.maxTickDurationMs();
     Serial.printf(
-        "HEALTH uptime=%lu profile=%s wifi-active=%s state=%s battery=%ld charging=%s free-heap=%u max-loop-ms=%lu max-network-ms=%lu\n",
+        "HEALTH uptime=%lu profile=%s wifi-active=%s state=%s battery=%ld charging=%s free-heap=%u max-ui-loop-ms=%lu max-network-ms=%lu\n",
         now,
         activeProfile().brand(),
-        wifiRemoteStarted ? "yes" : "no",
-        androidTvRemote.stateLabel(),
+        wifiRemote.requested() ? "yes" : "no",
+        wifiRemote.stateLabel(),
         static_cast<long>(lastBatteryPercent),
         lastBatteryCharging ? "yes" : "no",
         static_cast<unsigned int>(ESP.getFreeHeap()),
@@ -460,7 +441,6 @@ void logHealthIfDue(unsigned long now) {
     );
 
     maxLoopDurationMs = 0;
-    maxNetworkTickMs = 0;
 }
 }  // namespace
 
@@ -472,12 +452,13 @@ void setup() {
     M5Cardputer.Display.setRotation(1);
     irTransmitter.begin();
     remoteScreen.begin();
+    wifiRemote.begin();
     refreshIndicators(millis(), true);
 
-    Serial.println("GlobalController TV-009 manual-network build ready");
+    Serial.println("GlobalController TV-009 async-network build ready");
     Serial.printf("Loaded profile: %s %s\n", activeProfile().brand(), activeProfile().model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
-    Serial.println("Select Xiaomi with T; press N to start or cancel its Wi-Fi remote");
+    Serial.println("T selects a TV; N starts or cancels Xiaomi Wi-Fi without blocking UI");
     Serial.printf(
         "Repeat timing: initial=%lu ms interval=%lu ms\n",
         static_cast<unsigned long>(kInitialRepeatDelayMs),
@@ -490,23 +471,7 @@ void loop() {
 
     M5Cardputer.update();
     handleKeyboard();
-
-    if (wifiRemoteStarted && xiaomiSelected()) {
-        const unsigned long networkStartedMs = millis();
-        androidTvRemote.loop();
-        const unsigned long networkDurationMs = millis() - networkStartedMs;
-        if (networkDurationMs > maxNetworkTickMs) {
-            maxNetworkTickMs = networkDurationMs;
-        }
-        if (networkDurationMs >= kSlowNetworkTickMs) {
-            Serial.printf(
-                "SLOW NETWORK TICK duration=%lu ms state=%s\n",
-                networkDurationMs,
-                androidTvRemote.stateLabel()
-            );
-        }
-        updateWifiStateUi();
-    }
+    updateWifiStateUi();
 
     const unsigned long loopDurationMs = millis() - loopStartedMs;
     if (loopDurationMs > maxLoopDurationMs) {
