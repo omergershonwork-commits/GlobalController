@@ -24,6 +24,7 @@ public:
     AndroidTvRemoteAdapter();
 
     void begin(const char* ssid, const char* password);
+    void cancel();
     void loop();
 
     bool submitPairingCode(const String& code);
