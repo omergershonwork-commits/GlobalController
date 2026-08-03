@@ -104,6 +104,18 @@ void RemoteScreen::showMessage(
     const char* detail,
     std::uint16_t accentColor
 ) {
+    if (state != nullptr && std::strcmp(state, "PAIR CODE") == 0) {
+        char pairingDetail[64];
+        std::snprintf(
+            pairingDetail,
+            sizeof(pairingDetail),
+            "%s  ENTER=SEND  N=CANCEL",
+            detail == nullptr ? "Code: ______" : detail
+        );
+        drawStatus(state, pairingDetail, accentColor);
+        return;
+    }
+
     drawStatus(state, detail, accentColor);
 }
 
