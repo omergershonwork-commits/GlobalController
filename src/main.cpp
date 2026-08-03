@@ -1,4 +1,5 @@
 #include <M5Cardputer.h>
+#include <WiFi.h>
 
 #include <cstdint>
 
@@ -17,6 +18,8 @@ constexpr unsigned long kSerialBaud = 115200;
 constexpr unsigned long kLoopDelayMs = 5;
 constexpr unsigned long kHealthLogIntervalMs = 2000;
 constexpr unsigned long kIndicatorRefreshIntervalMs = 2000;
+constexpr unsigned long kMetricSampleIntervalMs = 1000;
+constexpr unsigned long kMetricsRefreshIntervalMs = 1000;
 constexpr std::uint8_t kIrTxPin = 44;
 constexpr std::uint32_t kInitialRepeatDelayMs = 450;
 constexpr std::uint32_t kRepeatIntervalMs = 150;
@@ -43,9 +46,17 @@ RemoteScreen remoteScreen(lgProfile);
 
 AndroidTvRemoteState lastWifiState = AndroidTvRemoteState::Disabled;
 String pairingCode;
+bool pairingEntryActive = false;
+bool metricsVisible = false;
 unsigned long lastHealthLogMs = 0;
 unsigned long lastIndicatorRefreshMs = 0;
+unsigned long lastMetricSampleMs = 0;
+unsigned long lastMetricsRefreshMs = 0;
 unsigned long maxLoopDurationMs = 0;
+unsigned long recentMaxUiLoopMs = 0;
+unsigned long recentMaxNetworkTickMs = 0;
+std::uint32_t recentFreeHeapBytes = 0;
+std::int32_t recentWifiRssi = 0;
 std::int32_t lastBatteryPercent = -1;
 bool lastBatteryCharging = false;
 
@@ -55,6 +66,16 @@ const TvProfile& activeProfile() {
 
 bool xiaomiSelected() {
     return activeProfileIndex == kXiaomiProfileIndex;
+}
+
+bool pairingPhaseActive() {
+    if (!xiaomiSelected() || !wifiRemote.requested()) {
+        return false;
+    }
+
+    const AndroidTvRemoteState state = wifiRemote.state();
+    return state == AndroidTvRemoteState::PairingConnecting ||
+           state == AndroidTvRemoteState::PairingCodeRequired;
 }
 
 const char* verificationLabel(CodeVerification verification) {
@@ -118,21 +139,70 @@ std::uint16_t activityColor() {
     return WHITE;
 }
 
+void samplePower() {
+    lastBatteryPercent = M5Cardputer.Power.getBatteryLevel();
+    lastBatteryCharging =
+        M5Cardputer.Power.isCharging() == m5::Power_Class::is_charging;
+}
+
 void refreshIndicators(unsigned long now, bool force = false) {
     if (!force && now - lastIndicatorRefreshMs < kIndicatorRefreshIntervalMs) {
         return;
     }
 
     lastIndicatorRefreshMs = now;
-    lastBatteryPercent = M5Cardputer.Power.getBatteryLevel();
-    lastBatteryCharging =
-        M5Cardputer.Power.isCharging() == m5::Power_Class::is_charging;
+    samplePower();
+
+    if (metricsVisible) {
+        return;
+    }
 
     remoteScreen.showIndicators(
         activityLabel(),
         activityColor(),
         lastBatteryPercent,
         lastBatteryCharging
+    );
+}
+
+void sampleMetrics(unsigned long now, bool force = false) {
+    if (!force && now - lastMetricSampleMs < kMetricSampleIntervalMs) {
+        return;
+    }
+
+    lastMetricSampleMs = now;
+    samplePower();
+    recentMaxUiLoopMs = maxLoopDurationMs;
+    maxLoopDurationMs = 0;
+    recentMaxNetworkTickMs = wifiRemote.maxTickDurationMs();
+    recentFreeHeapBytes = ESP.getFreeHeap();
+    recentWifiRssi = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+}
+
+void renderMetrics(unsigned long now, bool force = false) {
+    if (!metricsVisible) {
+        return;
+    }
+
+    if (!force && now - lastMetricsRefreshMs < kMetricsRefreshIntervalMs) {
+        return;
+    }
+
+    lastMetricsRefreshMs = now;
+    sampleMetrics(now, force);
+    remoteScreen.showMetrics(
+        activeProfile().model(),
+        wifiRemote.stateLabel(),
+        wifiRemote.requested(),
+        recentWifiRssi,
+        lastBatteryPercent,
+        lastBatteryCharging,
+        recentFreeHeapBytes,
+        recentMaxUiLoopMs,
+        recentMaxNetworkTickMs,
+        wifiRemote.minimumFreeStackBytes(),
+        wifiRemote.configuredStackBytes(),
+        now
     );
 }
 
@@ -148,6 +218,24 @@ bool containsProfileSwitchKey(const Keyboard_Class::KeysState& state) {
 bool containsNetworkToggleKey(const Keyboard_Class::KeysState& state) {
     for (const char character : state.word) {
         if (character == 'n' || character == 'N') {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool containsMetricsToggleKey(const Keyboard_Class::KeysState& state) {
+    for (const char character : state.word) {
+        if (character == 'g' || character == 'G') {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool containsPairingEntryKey(const Keyboard_Class::KeysState& state) {
+    for (const char character : state.word) {
+        if (character == 'c' || character == 'C') {
             return true;
         }
     }
@@ -179,6 +267,8 @@ void showPairingCode() {
 void showWifiState(AndroidTvRemoteState state) {
     switch (state) {
         case AndroidTvRemoteState::Disabled:
+            pairingEntryActive = false;
+            pairingCode = "";
             if (kDeviceConfig.hasWifiCredentials()) {
                 remoteScreen.showMessage("WIFI OFF", "Press N to connect", YELLOW);
             } else {
@@ -186,31 +276,80 @@ void showWifiState(AndroidTvRemoteState state) {
             }
             return;
         case AndroidTvRemoteState::WifiConnecting:
-            remoteScreen.showMessage("WIFI CONNECT", "N cancels; T changes TV", CYAN);
+            pairingEntryActive = false;
+            remoteScreen.showMessage("WIFI CONNECT", "N cancels; G shows metrics", CYAN);
             return;
         case AndroidTvRemoteState::TvDiscovering:
-            remoteScreen.showMessage("TV SEARCH", "N cancels; controls stay live", CYAN);
+            pairingEntryActive = false;
+            remoteScreen.showMessage("TV SEARCH", "N cancels; G shows metrics", CYAN);
             return;
         case AndroidTvRemoteState::RemoteConnecting:
-            remoteScreen.showMessage("TV CONNECT", "N cancels; controls stay live", CYAN);
+            pairingEntryActive = false;
+            remoteScreen.showMessage("TV CONNECT", "N cancels; G shows metrics", CYAN);
             return;
         case AndroidTvRemoteState::PairingConnecting:
-            remoteScreen.showMessage("PAIRING", "Press N to cancel", YELLOW);
+            remoteScreen.showMessage("PAIRING", "C enters code; N cancels", YELLOW);
             return;
         case AndroidTvRemoteState::PairingCodeRequired:
-            pairingCode = "";
+            if (!pairingEntryActive) {
+                pairingCode = "";
+            }
+            pairingEntryActive = true;
             showPairingCode();
             return;
         case AndroidTvRemoteState::PairingSubmitting:
-            remoteScreen.showMessage("PAIRING", "Press N to cancel", YELLOW);
+            pairingEntryActive = false;
+            remoteScreen.showMessage("PAIRING", "Code submitted; N cancels", YELLOW);
             return;
         case AndroidTvRemoteState::Ready:
-            remoteScreen.showMessage("WIFI READY", "N disconnects Wi-Fi remote", GREEN);
+            pairingEntryActive = false;
+            pairingCode = "";
+            remoteScreen.showMessage("WIFI READY", "N disconnects; G metrics", GREEN);
             return;
         case AndroidTvRemoteState::Error:
-            remoteScreen.showMessage("WIFI ERROR", "Press N to stop", RED);
+            pairingEntryActive = false;
+            remoteScreen.showMessage("WIFI ERROR", "N stops; G shows metrics", RED);
             return;
     }
+}
+
+void redrawRemoteScreen() {
+    remoteScreen.setProfile(activeProfile());
+    refreshIndicators(millis(), true);
+
+    if (xiaomiSelected()) {
+        showWifiState(wifiRemote.state());
+    } else {
+        remoteScreen.showReady();
+    }
+}
+
+void toggleMetrics() {
+    metricsVisible = !metricsVisible;
+    Serial.printf("Metrics screen: %s\n", metricsVisible ? "open" : "closed");
+
+    if (metricsVisible) {
+        pairingEntryActive = false;
+        renderMetrics(millis(), true);
+    } else {
+        redrawRemoteScreen();
+    }
+}
+
+void openPairingEntryManually() {
+    if (!pairingPhaseActive()) {
+        if (!metricsVisible) {
+            remoteScreen.showMessage("PAIR CODE", "Available after TV pairing starts", YELLOW);
+        }
+        Serial.println("Pairing-code shortcut ignored: pairing is not active");
+        return;
+    }
+
+    metricsVisible = false;
+    pairingEntryActive = true;
+    pairingCode = "";
+    showPairingCode();
+    Serial.println("Manual pairing-code entry opened with C");
 }
 
 void updateWifiStateUi() {
@@ -221,10 +360,17 @@ void updateWifiStateUi() {
 
     lastWifiState = state;
     Serial.printf("Android TV remote state: %s\n", wifiRemote.stateLabel());
-    refreshIndicators(millis(), true);
 
-    if (xiaomiSelected()) {
+    if (state == AndroidTvRemoteState::PairingCodeRequired) {
+        metricsVisible = false;
         showWifiState(state);
+        refreshIndicators(millis(), true);
+        return;
+    }
+
+    if (!metricsVisible && xiaomiSelected()) {
+        showWifiState(state);
+        refreshIndicators(millis(), true);
     }
 }
 
@@ -235,13 +381,21 @@ void startWifiRemote() {
 
     Serial.println("Network button: starting Android TV Wi-Fi remote");
     if (!wifiRemote.start(kDeviceConfig.wifiSsid, kDeviceConfig.wifiPassword)) {
-        remoteScreen.showMessage("WIFI ERROR", "Unable to start network task", RED);
+        if (!metricsVisible) {
+            remoteScreen.showMessage("WIFI ERROR", "Unable to start network task", RED);
+        }
         return;
     }
 
+    pairingEntryActive = false;
+    pairingCode = "";
     lastWifiState = AndroidTvRemoteState::Disabled;
-    showWifiState(AndroidTvRemoteState::WifiConnecting);
-    refreshIndicators(millis(), true);
+    if (metricsVisible) {
+        renderMetrics(millis(), true);
+    } else {
+        showWifiState(AndroidTvRemoteState::WifiConnecting);
+        refreshIndicators(millis(), true);
+    }
 }
 
 void cancelWifiRemote(bool updateScreen = true) {
@@ -250,11 +404,18 @@ void cancelWifiRemote(bool updateScreen = true) {
         wifiRemote.cancel();
     }
 
+    pairingEntryActive = false;
     pairingCode = "";
     lastWifiState = AndroidTvRemoteState::Disabled;
     remoteApplication.reset();
 
-    if (updateScreen && xiaomiSelected()) {
+    if (!updateScreen || !xiaomiSelected()) {
+        return;
+    }
+
+    if (metricsVisible) {
+        renderMetrics(millis(), true);
+    } else {
         showWifiState(AndroidTvRemoteState::Disabled);
         refreshIndicators(millis(), true);
     }
@@ -262,7 +423,9 @@ void cancelWifiRemote(bool updateScreen = true) {
 
 void toggleWifiRemote() {
     if (!xiaomiSelected()) {
-        remoteScreen.showMessage("NETWORK", "Select Xiaomi with T", YELLOW);
+        if (!metricsVisible) {
+            remoteScreen.showMessage("NETWORK", "Select Xiaomi with T", YELLOW);
+        }
         Serial.println("Network button ignored: Xiaomi profile is not selected");
         return;
     }
@@ -279,17 +442,23 @@ void selectNextProfile() {
         cancelWifiRemote(false);
     }
 
+    pairingEntryActive = false;
+    pairingCode = "";
     activeProfileIndex = static_cast<std::uint8_t>((activeProfileIndex + 1) % kProfileCount);
     const TvProfile& profile = activeProfile();
 
     remoteApplication.setProfile(profile);
-    remoteScreen.setProfile(profile);
     Serial.printf("Selected profile: %s %s\n", profile.brand(), profile.model());
 
+    if (metricsVisible) {
+        renderMetrics(millis(), true);
+        return;
+    }
+
+    remoteScreen.setProfile(profile);
     if (xiaomiSelected()) {
         showWifiState(AndroidTvRemoteState::Disabled);
     }
-
     refreshIndicators(millis(), true);
 }
 
@@ -360,9 +529,18 @@ void handlePairingInput(const Keyboard_Class::KeysState& state) {
             return;
         }
 
+        if (!wifiRemote.pairingCodeRequired()) {
+            remoteScreen.showMessage("PAIR WAIT", "TV handshake is not ready yet", YELLOW);
+            return;
+        }
+
         if (!wifiRemote.submitPairingCode(pairingCode)) {
             remoteScreen.showMessage("PAIR ERROR", "Code queue is busy", RED);
+            return;
         }
+
+        pairingEntryActive = false;
+        remoteScreen.showMessage("PAIR SENT", "Waiting for television", CYAN);
         return;
     }
 
@@ -396,11 +574,30 @@ void handleKeyboard() {
         return;
     }
 
-    if (xiaomiSelected() && wifiRemote.pairingCodeRequired()) {
+    if (pairingEntryActive) {
         remoteApplication.reset();
         if (pressed && inputChanged) {
             handlePairingInput(state);
         }
+        return;
+    }
+
+    if (pressed && containsMetricsToggleKey(state)) {
+        if (inputChanged) {
+            toggleMetrics();
+        }
+        return;
+    }
+
+    if (pressed && containsPairingEntryKey(state)) {
+        if (inputChanged) {
+            openPairingEntryManually();
+        }
+        return;
+    }
+
+    if (metricsVisible) {
+        remoteApplication.reset();
         return;
     }
 
@@ -426,21 +623,21 @@ void logHealthIfDue(unsigned long now) {
     }
 
     lastHealthLogMs = now;
-    const unsigned long maxNetworkTickMs = wifiRemote.maxTickDurationMs();
     Serial.printf(
-        "HEALTH uptime=%lu profile=%s wifi-active=%s state=%s battery=%ld charging=%s free-heap=%u max-ui-loop-ms=%lu max-network-ms=%lu\n",
+        "HEALTH uptime=%lu profile=%s wifi-active=%s state=%s rssi=%ld battery=%ld charging=%s free-heap=%u max-ui-loop-ms=%lu max-network-ms=%lu network-stack-free=%lu/%lu\n",
         now,
         activeProfile().brand(),
         wifiRemote.requested() ? "yes" : "no",
         wifiRemote.stateLabel(),
+        static_cast<long>(recentWifiRssi),
         static_cast<long>(lastBatteryPercent),
         lastBatteryCharging ? "yes" : "no",
-        static_cast<unsigned int>(ESP.getFreeHeap()),
-        maxLoopDurationMs,
-        maxNetworkTickMs
+        static_cast<unsigned int>(recentFreeHeapBytes),
+        recentMaxUiLoopMs,
+        recentMaxNetworkTickMs,
+        static_cast<unsigned long>(wifiRemote.minimumFreeStackBytes()),
+        static_cast<unsigned long>(wifiRemote.configuredStackBytes())
     );
-
-    maxLoopDurationMs = 0;
 }
 }  // namespace
 
@@ -453,12 +650,13 @@ void setup() {
     irTransmitter.begin();
     remoteScreen.begin();
     wifiRemote.begin();
+    sampleMetrics(millis(), true);
     refreshIndicators(millis(), true);
 
-    Serial.println("GlobalController TV-009 async-network build ready");
+    Serial.println("GlobalController TV-009 diagnostics build ready");
     Serial.printf("Loaded profile: %s %s\n", activeProfile().brand(), activeProfile().model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
-    Serial.println("T selects a TV; N starts or cancels Xiaomi Wi-Fi without blocking UI");
+    Serial.println("T selects TV; N starts/cancels Wi-Fi; G opens metrics; C opens code entry during pairing");
     Serial.printf(
         "Repeat timing: initial=%lu ms interval=%lu ms\n",
         static_cast<unsigned long>(kInitialRepeatDelayMs),
@@ -479,7 +677,12 @@ void loop() {
     }
 
     const unsigned long now = millis();
-    refreshIndicators(now);
+    sampleMetrics(now);
+    if (metricsVisible) {
+        renderMetrics(now);
+    } else {
+        refreshIndicators(now);
+    }
     logHealthIfDue(now);
     delay(kLoopDelayMs);
 }
