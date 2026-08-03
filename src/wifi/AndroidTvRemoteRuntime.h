@@ -25,6 +25,8 @@ public:
     const char* stateLabel() const;
 
     unsigned long maxTickDurationMs();
+    std::uint32_t minimumFreeStackBytes() const;
+    std::uint32_t configuredStackBytes() const;
 
 private:
     enum class MessageType : std::uint8_t {
@@ -46,6 +48,7 @@ private:
     void run();
     void handleMessage(const Message& message);
     bool enqueue(const Message& message, bool urgent = false);
+    void sampleStackWatermark();
 
     AndroidTvRemoteAdapter& adapter_;
     QueueHandle_t queue_;
@@ -54,4 +57,5 @@ private:
     volatile bool configured_;
     volatile bool workerActive_;
     volatile unsigned long maxTickDurationMs_;
+    volatile std::uint32_t minimumFreeStackBytes_;
 };
