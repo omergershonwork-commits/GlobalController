@@ -2,9 +2,16 @@
 
 #include <M5Cardputer.h>
 
+#include <cstdio>
+#include <cstring>
+
 namespace {
 constexpr std::int32_t kStatusTop = 105;
 constexpr std::int32_t kStatusHeight = 30;
+constexpr std::int32_t kBatteryLeft = 204;
+constexpr std::int32_t kBatteryWidth = 36;
+constexpr std::int32_t kActivityLeft = 150;
+constexpr std::int32_t kActivityWidth = 90;
 
 void drawHintRow(const char* text, std::int32_t y) {
     auto& display = M5Cardputer.Display;
@@ -15,7 +22,14 @@ void drawHintRow(const char* text, std::int32_t y) {
 }
 }  // namespace
 
-RemoteScreen::RemoteScreen(const TvProfile& profile) : profile_(&profile) {}
+RemoteScreen::RemoteScreen(const TvProfile& profile)
+    : profile_(&profile),
+      activity_{},
+      activityColor_(GREEN),
+      batteryPercent_(-1),
+      charging_(false) {
+    std::strncpy(activity_, "IR READY", sizeof(activity_) - 1);
+}
 
 void RemoteScreen::begin() {
     drawLayout();
@@ -93,6 +107,31 @@ void RemoteScreen::showMessage(
     drawStatus(state, detail, accentColor);
 }
 
+void RemoteScreen::showIndicators(
+    const char* activity,
+    std::uint16_t activityColor,
+    std::int32_t batteryPercent,
+    bool charging
+) {
+    const char* safeActivity = activity == nullptr ? "UNKNOWN" : activity;
+    const bool activityChanged =
+        std::strncmp(activity_, safeActivity, sizeof(activity_)) != 0 ||
+        activityColor_ != activityColor;
+    const bool batteryChanged =
+        batteryPercent_ != batteryPercent || charging_ != charging;
+
+    if (!activityChanged && !batteryChanged) {
+        return;
+    }
+
+    std::strncpy(activity_, safeActivity, sizeof(activity_) - 1);
+    activity_[sizeof(activity_) - 1] = '\0';
+    activityColor_ = activityColor;
+    batteryPercent_ = batteryPercent;
+    charging_ = charging;
+    drawIndicators();
+}
+
 void RemoteScreen::drawLayout() {
     auto& display = M5Cardputer.Display;
 
@@ -111,6 +150,7 @@ void RemoteScreen::drawLayout() {
     display.print(' ');
     display.print(profile_->model());
 
+    drawIndicators();
     display.drawFastHLine(0, 35, display.width(), GREEN);
 
     drawHintRow("[T] TV  [P] POWER  [M] MUTE", 42);
@@ -119,6 +159,38 @@ void RemoteScreen::drawLayout() {
     drawHintRow("[ENTER/O] OK    [DEL/B] BACK", 87);
 
     display.drawFastHLine(0, kStatusTop, display.width(), WHITE);
+}
+
+void RemoteScreen::drawIndicators() {
+    auto& display = M5Cardputer.Display;
+
+    display.setTextSize(1);
+
+    display.fillRect(kBatteryLeft, 0, kBatteryWidth, 18, BLACK);
+    display.setTextColor(charging_ ? CYAN : WHITE, BLACK);
+
+    char batteryText[8];
+    if (batteryPercent_ < 0 || batteryPercent_ > 100) {
+        std::snprintf(batteryText, sizeof(batteryText), "--%%");
+    } else {
+        std::snprintf(
+            batteryText,
+            sizeof(batteryText),
+            charging_ ? "+%ld%%" : "%ld%%",
+            static_cast<long>(batteryPercent_)
+        );
+    }
+
+    const std::int32_t batteryTextWidth = display.textWidth(batteryText);
+    display.setCursor(display.width() - 5 - batteryTextWidth, 5);
+    display.print(batteryText);
+
+    display.fillRect(kActivityLeft, 20, kActivityWidth, 14, BLACK);
+    display.setTextColor(activityColor_, BLACK);
+    const std::int32_t activityTextWidth = display.textWidth(activity_);
+    const std::int32_t activityX = display.width() - 5 - activityTextWidth;
+    display.setCursor(activityX < kActivityLeft ? kActivityLeft : activityX, 25);
+    display.print(activity_);
 }
 
 void RemoteScreen::drawStatus(
