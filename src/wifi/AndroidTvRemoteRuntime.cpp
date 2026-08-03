@@ -4,7 +4,8 @@
 
 namespace {
 constexpr std::size_t kQueueLength = 12;
-constexpr std::uint32_t kTaskStackBytes = 12288;
+constexpr std::uint32_t kTaskStackBytes = 32768;
+constexpr std::uint32_t kStackWarningBytes = 4096;
 constexpr UBaseType_t kTaskPriority = 1;
 constexpr BaseType_t kNetworkCore = 0;
 constexpr TickType_t kWorkerDelay = pdMS_TO_TICKS(5);
@@ -27,7 +28,8 @@ AndroidTvRemoteRuntime::AndroidTvRemoteRuntime(AndroidTvRemoteAdapter& adapter)
       requested_(false),
       configured_(false),
       workerActive_(false),
-      maxTickDurationMs_(0) {}
+      maxTickDurationMs_(0),
+      minimumFreeStackBytes_(kTaskStackBytes) {}
 
 bool AndroidTvRemoteRuntime::begin() {
     if (task_ != nullptr) {
@@ -58,7 +60,11 @@ bool AndroidTvRemoteRuntime::begin() {
         return false;
     }
 
-    Serial.println("Android TV runtime task started on core 0");
+    Serial.printf(
+        "Android TV runtime task started on core %d with %lu-byte stack\n",
+        static_cast<int>(kNetworkCore),
+        static_cast<unsigned long>(kTaskStackBytes)
+    );
     return true;
 }
 
@@ -149,6 +155,14 @@ unsigned long AndroidTvRemoteRuntime::maxTickDurationMs() {
     return duration;
 }
 
+std::uint32_t AndroidTvRemoteRuntime::minimumFreeStackBytes() const {
+    return minimumFreeStackBytes_;
+}
+
+std::uint32_t AndroidTvRemoteRuntime::configuredStackBytes() const {
+    return kTaskStackBytes;
+}
+
 void AndroidTvRemoteRuntime::taskEntry(void* context) {
     auto* runtime = static_cast<AndroidTvRemoteRuntime*>(context);
     runtime->run();
@@ -156,10 +170,12 @@ void AndroidTvRemoteRuntime::taskEntry(void* context) {
 
 void AndroidTvRemoteRuntime::run() {
     Message message{};
+    sampleStackWatermark();
 
     for (;;) {
         while (xQueueReceive(queue_, &message, 0) == pdTRUE) {
             handleMessage(message);
+            sampleStackWatermark();
         }
 
         if (workerActive_ && requested_) {
@@ -169,6 +185,7 @@ void AndroidTvRemoteRuntime::run() {
             if (durationMs > maxTickDurationMs_) {
                 maxTickDurationMs_ = durationMs;
             }
+            sampleStackWatermark();
         }
 
         vTaskDelay(kWorkerDelay);
@@ -224,4 +241,24 @@ bool AndroidTvRemoteRuntime::enqueue(const Message& message, bool urgent) {
     }
 
     return true;
+}
+
+void AndroidTvRemoteRuntime::sampleStackWatermark() {
+    const std::uint32_t freeBytes = static_cast<std::uint32_t>(
+        uxTaskGetStackHighWaterMark(nullptr)
+    );
+
+    if (freeBytes >= minimumFreeStackBytes_) {
+        return;
+    }
+
+    minimumFreeStackBytes_ = freeBytes;
+    Serial.printf(
+        "Android TV task stack watermark: %lu bytes free\n",
+        static_cast<unsigned long>(freeBytes)
+    );
+
+    if (freeBytes < kStackWarningBytes) {
+        Serial.println("WARNING: Android TV task stack is close to exhaustion");
+    }
 }
