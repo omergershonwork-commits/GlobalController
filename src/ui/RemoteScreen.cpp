@@ -46,7 +46,7 @@ void RemoteScreen::showReady() {
     const bool wifiProfile = profile_->routeFor(TvCommand::VolumeUp) == TvCommandRoute::Wifi;
     drawStatus(
         "READY",
-        wifiProfile ? "IR power + Wi-Fi controls" : "Point IR edge toward television",
+        wifiProfile ? "[N] Wi-Fi  [P] IR power" : "Point IR edge toward television",
         GREEN
     );
 }
@@ -69,11 +69,11 @@ void RemoteScreen::showEvent(const RemoteEvent& event) {
             return;
 
         case RemoteEventType::WifiNotConfigured:
-            drawStatus("WIFI SETUP", "Create include/local_config.h", YELLOW);
+            drawStatus("WIFI OFF", "Press N to start Wi-Fi", YELLOW);
             return;
 
         case RemoteEventType::WifiNotReady:
-            drawStatus("WIFI WAIT", "Connect or finish TV pairing", YELLOW);
+            drawStatus("WIFI WAIT", "N cancels or restarts connection", YELLOW);
             return;
 
         case RemoteEventType::TransportError:
@@ -153,7 +153,7 @@ void RemoteScreen::drawLayout() {
     drawIndicators();
     display.drawFastHLine(0, 35, display.width(), GREEN);
 
-    drawHintRow("[T] TV  [P] POWER  [M] MUTE", 42);
+    drawHintRow("[T] TV [N] WIFI [P] POWER", 42);
     drawHintRow("[I] INPUT [H] HOME [U/J] VOLUME", 57);
     drawHintRow("[R/F] CHANNEL   [WASD] MOVE", 72);
     drawHintRow("[ENTER/O] OK    [DEL/B] BACK", 87);
