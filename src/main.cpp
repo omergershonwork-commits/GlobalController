@@ -73,7 +73,7 @@ const char* activityLabel() {
 
     switch (androidTvRemote.state()) {
         case AndroidTvRemoteState::Disabled:
-            return "WIFI SETUP";
+            return kDeviceConfig.hasWifiCredentials() ? "WIFI OFF" : "WIFI SETUP";
         case AndroidTvRemoteState::WifiConnecting:
             return "WIFI JOIN";
         case AndroidTvRemoteState::TvDiscovering:
@@ -147,6 +147,16 @@ bool containsProfileSwitchKey(const Keyboard_Class::KeysState& state) {
     return false;
 }
 
+bool containsNetworkToggleKey(const Keyboard_Class::KeysState& state) {
+    for (const char character : state.word) {
+        if (character == 'n' || character == 'N') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool isHexCharacter(char character) {
     return (character >= '0' && character <= '9') ||
            (character >= 'a' && character <= 'f') ||
@@ -174,32 +184,36 @@ void showPairingCode() {
 void showWifiState(AndroidTvRemoteState state) {
     switch (state) {
         case AndroidTvRemoteState::Disabled:
-            remoteScreen.showMessage("WIFI SETUP", "Add local Wi-Fi credentials", YELLOW);
+            if (kDeviceConfig.hasWifiCredentials()) {
+                remoteScreen.showMessage("WIFI OFF", "Press N to connect", YELLOW);
+            } else {
+                remoteScreen.showMessage("WIFI SETUP", "Add local Wi-Fi credentials", YELLOW);
+            }
             return;
         case AndroidTvRemoteState::WifiConnecting:
-            remoteScreen.showMessage("WIFI CONNECT", "Joining configured network", YELLOW);
+            remoteScreen.showMessage("WIFI CONNECT", "Press N to cancel", YELLOW);
             return;
         case AndroidTvRemoteState::TvDiscovering:
-            remoteScreen.showMessage("TV SEARCH", "Finding Android TV automatically", YELLOW);
+            remoteScreen.showMessage("TV SEARCH", "Press N to cancel", YELLOW);
             return;
         case AndroidTvRemoteState::RemoteConnecting:
-            remoteScreen.showMessage("TV CONNECT", "Opening Android TV remote", YELLOW);
+            remoteScreen.showMessage("TV CONNECT", "Press N to cancel", YELLOW);
             return;
         case AndroidTvRemoteState::PairingConnecting:
-            remoteScreen.showMessage("PAIRING", "Starting TV pairing", YELLOW);
+            remoteScreen.showMessage("PAIRING", "Press N to cancel", YELLOW);
             return;
         case AndroidTvRemoteState::PairingCodeRequired:
             pairingCode = "";
             showPairingCode();
             return;
         case AndroidTvRemoteState::PairingSubmitting:
-            remoteScreen.showMessage("PAIRING", "Checking displayed code", YELLOW);
+            remoteScreen.showMessage("PAIRING", "Press N to cancel", YELLOW);
             return;
         case AndroidTvRemoteState::Ready:
-            remoteScreen.showMessage("WIFI READY", "Xiaomi controls connected", GREEN);
+            remoteScreen.showMessage("WIFI READY", "N disconnects Wi-Fi remote", GREEN);
             return;
         case AndroidTvRemoteState::Error:
-            remoteScreen.showMessage("WIFI ERROR", "Check serial monitor", RED);
+            remoteScreen.showMessage("WIFI ERROR", "Press N to stop", RED);
             return;
     }
 }
@@ -219,21 +233,58 @@ void updateWifiStateUi() {
     }
 }
 
-void startWifiRemoteIfNeeded() {
+void startWifiRemote() {
     if (wifiRemoteStarted) {
         return;
     }
 
-    wifiRemoteStarted = true;
-    Serial.println("Starting Android TV Wi-Fi remote after Xiaomi profile selection");
+    Serial.println("Network button: starting Android TV Wi-Fi remote");
     androidTvRemote.begin(
         kDeviceConfig.wifiSsid,
         kDeviceConfig.wifiPassword
     );
+    wifiRemoteStarted = androidTvRemote.configured();
     lastWifiState = androidTvRemote.state();
+    showWifiState(androidTvRemote.state());
+    refreshIndicators(millis(), true);
+}
+
+void cancelWifiRemote(bool updateScreen = true) {
+    if (wifiRemoteStarted) {
+        Serial.println("Network button: cancelling Android TV Wi-Fi remote");
+        androidTvRemote.cancel();
+    }
+
+    wifiRemoteStarted = false;
+    pairingCode = "";
+    lastWifiState = AndroidTvRemoteState::Disabled;
+    remoteApplication.reset();
+
+    if (updateScreen && xiaomiSelected()) {
+        showWifiState(AndroidTvRemoteState::Disabled);
+        refreshIndicators(millis(), true);
+    }
+}
+
+void toggleWifiRemote() {
+    if (!xiaomiSelected()) {
+        remoteScreen.showMessage("NETWORK", "Select Xiaomi with T", YELLOW);
+        Serial.println("Network button ignored: Xiaomi profile is not selected");
+        return;
+    }
+
+    if (wifiRemoteStarted) {
+        cancelWifiRemote();
+    } else {
+        startWifiRemote();
+    }
 }
 
 void selectNextProfile() {
+    if (xiaomiSelected() && wifiRemoteStarted) {
+        cancelWifiRemote(false);
+    }
+
     activeProfileIndex = static_cast<std::uint8_t>((activeProfileIndex + 1) % kProfileCount);
     const TvProfile& profile = activeProfile();
 
@@ -243,8 +294,7 @@ void selectNextProfile() {
     Serial.printf("Selected profile: %s %s\n", profile.brand(), profile.model());
 
     if (xiaomiSelected()) {
-        startWifiRemoteIfNeeded();
-        showWifiState(androidTvRemote.state());
+        showWifiState(AndroidTvRemoteState::Disabled);
     }
 
     refreshIndicators(millis(), true);
@@ -268,7 +318,7 @@ void logEvent(const RemoteEvent& event) {
             return;
 
         case RemoteEventType::WifiNotConfigured:
-            Serial.printf("Wi-Fi command needs local credentials: %s\n", event.label);
+            Serial.printf("Wi-Fi command needs N to start the network remote: %s\n", event.label);
             return;
 
         case RemoteEventType::WifiNotReady:
@@ -347,6 +397,14 @@ void handleKeyboard() {
     const bool pressed = M5Cardputer.Keyboard.isPressed();
     const auto& state = M5Cardputer.Keyboard.keysState();
 
+    if (pressed && containsNetworkToggleKey(state)) {
+        if (inputChanged) {
+            Serial.println("Keyboard: network toggle requested");
+            toggleWifiRemote();
+        }
+        return;
+    }
+
     if (pressed && containsProfileSwitchKey(state)) {
         if (inputChanged) {
             Serial.println("Keyboard: profile switch requested");
@@ -389,7 +447,7 @@ void logHealthIfDue(unsigned long now) {
 
     lastHealthLogMs = now;
     Serial.printf(
-        "HEALTH uptime=%lu profile=%s wifi-started=%s state=%s battery=%ld charging=%s free-heap=%u max-loop-ms=%lu max-network-ms=%lu\n",
+        "HEALTH uptime=%lu profile=%s wifi-active=%s state=%s battery=%ld charging=%s free-heap=%u max-loop-ms=%lu max-network-ms=%lu\n",
         now,
         activeProfile().brand(),
         wifiRemoteStarted ? "yes" : "no",
@@ -416,10 +474,10 @@ void setup() {
     remoteScreen.begin();
     refreshIndicators(millis(), true);
 
-    Serial.println("GlobalController TV-009 responsive-runtime build ready");
+    Serial.println("GlobalController TV-009 manual-network build ready");
     Serial.printf("Loaded profile: %s %s\n", activeProfile().brand(), activeProfile().model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
-    Serial.println("Android TV Wi-Fi startup is deferred until Xiaomi is selected");
+    Serial.println("Select Xiaomi with T; press N to start or cancel its Wi-Fi remote");
     Serial.printf(
         "Repeat timing: initial=%lu ms interval=%lu ms\n",
         static_cast<unsigned long>(kInitialRepeatDelayMs),
