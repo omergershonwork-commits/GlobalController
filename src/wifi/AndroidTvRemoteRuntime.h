@@ -48,6 +48,8 @@ private:
     void run();
     void handleMessage(const Message& message);
     bool enqueue(const Message& message, bool urgent = false);
+    void processPendingPairingCode();
+    void clearPendingPairingCode();
     void sampleStackWatermark();
 
     AndroidTvRemoteAdapter& adapter_;
@@ -58,4 +60,6 @@ private:
     volatile bool workerActive_;
     volatile unsigned long maxTickDurationMs_;
     volatile std::uint32_t minimumFreeStackBytes_;
+    bool pairingCodePending_;
+    char pendingPairingCode_[7];
 };
