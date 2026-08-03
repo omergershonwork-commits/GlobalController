@@ -68,6 +68,26 @@ void AndroidTvRemoteAdapter::begin(
     Serial.printf("Connecting to Wi-Fi SSID: %s\n", ssid);
 }
 
+void AndroidTvRemoteAdapter::cancel() {
+    if (mdnsStarted_) {
+        MDNS.end();
+        mdnsStarted_ = false;
+    }
+
+    remoteManager_.stop();
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+
+    pairingCodeSubmitted_ = false;
+    pairingManager_.isSecure = false;
+    tvIp_ = IPAddress(0, 0, 0, 0);
+    remotePort_ = kDefaultRemotePort;
+    lastDiscoveryAttemptMs_ = 0;
+    state_ = AndroidTvRemoteState::Disabled;
+
+    Serial.println("Android TV Wi-Fi remote cancelled");
+}
+
 void AndroidTvRemoteAdapter::loop() {
     switch (state_) {
         case AndroidTvRemoteState::Disabled:
@@ -225,7 +245,7 @@ bool AndroidTvRemoteAdapter::pairingCodeRequired() const {
 const char* AndroidTvRemoteAdapter::stateLabel() const {
     switch (state_) {
         case AndroidTvRemoteState::Disabled:
-            return "Wi-Fi config required";
+            return "Wi-Fi remote stopped";
         case AndroidTvRemoteState::WifiConnecting:
             return "Connecting Wi-Fi";
         case AndroidTvRemoteState::TvDiscovering:
