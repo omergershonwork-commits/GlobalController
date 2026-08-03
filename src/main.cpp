@@ -15,6 +15,7 @@ namespace {
 constexpr unsigned long kSerialBaud = 115200;
 constexpr unsigned long kLoopDelayMs = 5;
 constexpr unsigned long kHealthLogIntervalMs = 2000;
+constexpr unsigned long kIndicatorRefreshIntervalMs = 2000;
 constexpr unsigned long kSlowNetworkTickMs = 100;
 constexpr std::uint8_t kIrTxPin = 44;
 constexpr std::uint32_t kInitialRepeatDelayMs = 450;
@@ -43,8 +44,11 @@ AndroidTvRemoteState lastWifiState = AndroidTvRemoteState::Disabled;
 String pairingCode;
 bool wifiRemoteStarted = false;
 unsigned long lastHealthLogMs = 0;
+unsigned long lastIndicatorRefreshMs = 0;
 unsigned long maxLoopDurationMs = 0;
 unsigned long maxNetworkTickMs = 0;
+std::int32_t lastBatteryPercent = -1;
+bool lastBatteryCharging = false;
 
 const TvProfile& activeProfile() {
     return *kProfiles[activeProfileIndex];
@@ -60,6 +64,77 @@ const char* verificationLabel(CodeVerification verification) {
 
 const char* routeLabel(TvCommandRoute route) {
     return route == TvCommandRoute::Wifi ? "wifi" : "infrared";
+}
+
+const char* activityLabel() {
+    if (!xiaomiSelected()) {
+        return "IR READY";
+    }
+
+    switch (androidTvRemote.state()) {
+        case AndroidTvRemoteState::Disabled:
+            return "WIFI SETUP";
+        case AndroidTvRemoteState::WifiConnecting:
+            return "WIFI JOIN";
+        case AndroidTvRemoteState::TvDiscovering:
+            return "TV SEARCH";
+        case AndroidTvRemoteState::RemoteConnecting:
+            return "TV LINK";
+        case AndroidTvRemoteState::PairingConnecting:
+            return "PAIR START";
+        case AndroidTvRemoteState::PairingCodeRequired:
+            return "PAIR CODE";
+        case AndroidTvRemoteState::PairingSubmitting:
+            return "PAIR CHECK";
+        case AndroidTvRemoteState::Ready:
+            return "WIFI READY";
+        case AndroidTvRemoteState::Error:
+            return "WIFI ERROR";
+    }
+
+    return "UNKNOWN";
+}
+
+std::uint16_t activityColor() {
+    if (!xiaomiSelected()) {
+        return GREEN;
+    }
+
+    switch (androidTvRemote.state()) {
+        case AndroidTvRemoteState::Disabled:
+        case AndroidTvRemoteState::PairingConnecting:
+        case AndroidTvRemoteState::PairingCodeRequired:
+        case AndroidTvRemoteState::PairingSubmitting:
+            return YELLOW;
+        case AndroidTvRemoteState::WifiConnecting:
+        case AndroidTvRemoteState::TvDiscovering:
+        case AndroidTvRemoteState::RemoteConnecting:
+            return CYAN;
+        case AndroidTvRemoteState::Ready:
+            return GREEN;
+        case AndroidTvRemoteState::Error:
+            return RED;
+    }
+
+    return WHITE;
+}
+
+void refreshIndicators(unsigned long now, bool force = false) {
+    if (!force && now - lastIndicatorRefreshMs < kIndicatorRefreshIntervalMs) {
+        return;
+    }
+
+    lastIndicatorRefreshMs = now;
+    lastBatteryPercent = M5Cardputer.Power.getBatteryLevel();
+    lastBatteryCharging =
+        M5Cardputer.Power.isCharging() == m5::Power_Class::is_charging;
+
+    remoteScreen.showIndicators(
+        activityLabel(),
+        activityColor(),
+        lastBatteryPercent,
+        lastBatteryCharging
+    );
 }
 
 bool containsProfileSwitchKey(const Keyboard_Class::KeysState& state) {
@@ -137,6 +212,7 @@ void updateWifiStateUi() {
 
     lastWifiState = state;
     Serial.printf("Android TV remote state: %s\n", androidTvRemote.stateLabel());
+    refreshIndicators(millis(), true);
 
     if (xiaomiSelected()) {
         showWifiState(state);
@@ -170,6 +246,8 @@ void selectNextProfile() {
         startWifiRemoteIfNeeded();
         showWifiState(androidTvRemote.state());
     }
+
+    refreshIndicators(millis(), true);
 }
 
 void logEvent(const RemoteEvent& event) {
@@ -311,11 +389,13 @@ void logHealthIfDue(unsigned long now) {
 
     lastHealthLogMs = now;
     Serial.printf(
-        "HEALTH uptime=%lu profile=%s wifi-started=%s state=%s free-heap=%u max-loop-ms=%lu max-network-ms=%lu\n",
+        "HEALTH uptime=%lu profile=%s wifi-started=%s state=%s battery=%ld charging=%s free-heap=%u max-loop-ms=%lu max-network-ms=%lu\n",
         now,
         activeProfile().brand(),
         wifiRemoteStarted ? "yes" : "no",
         androidTvRemote.stateLabel(),
+        static_cast<long>(lastBatteryPercent),
+        lastBatteryCharging ? "yes" : "no",
         static_cast<unsigned int>(ESP.getFreeHeap()),
         maxLoopDurationMs,
         maxNetworkTickMs
@@ -334,6 +414,7 @@ void setup() {
     M5Cardputer.Display.setRotation(1);
     irTransmitter.begin();
     remoteScreen.begin();
+    refreshIndicators(millis(), true);
 
     Serial.println("GlobalController TV-009 responsive-runtime build ready");
     Serial.printf("Loaded profile: %s %s\n", activeProfile().brand(), activeProfile().model());
@@ -373,6 +454,9 @@ void loop() {
     if (loopDurationMs > maxLoopDurationMs) {
         maxLoopDurationMs = loopDurationMs;
     }
-    logHealthIfDue(millis());
+
+    const unsigned long now = millis();
+    refreshIndicators(now);
+    logHealthIfDue(now);
     delay(kLoopDelayMs);
 }
