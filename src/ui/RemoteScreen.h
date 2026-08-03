@@ -24,6 +24,20 @@ public:
         std::int32_t batteryPercent,
         bool charging
     );
+    void showMetrics(
+        const char* profile,
+        const char* wifiState,
+        bool wifiActive,
+        std::int32_t wifiRssi,
+        std::int32_t batteryPercent,
+        bool charging,
+        std::uint32_t freeHeapBytes,
+        unsigned long maxUiLoopMs,
+        unsigned long maxNetworkTickMs,
+        std::uint32_t networkStackFreeBytes,
+        std::uint32_t networkStackBytes,
+        unsigned long uptimeMs
+    );
 
 private:
     void drawLayout();
