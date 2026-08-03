@@ -20,7 +20,7 @@ CommandDeliveryResult result(
 
 HybridTvCommandSender::HybridTvCommandSender(
     IrTransmitter& infraredTransmitter,
-    AndroidTvRemoteAdapter& wifiRemote
+    AndroidTvRemoteRuntime& wifiRemote
 )
     : infraredTransmitter_(infraredTransmitter),
       wifiRemote_(wifiRemote) {}
