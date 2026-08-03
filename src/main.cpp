@@ -14,6 +14,8 @@
 namespace {
 constexpr unsigned long kSerialBaud = 115200;
 constexpr unsigned long kLoopDelayMs = 5;
+constexpr unsigned long kHealthLogIntervalMs = 2000;
+constexpr unsigned long kSlowNetworkTickMs = 100;
 constexpr std::uint8_t kIrTxPin = 44;
 constexpr std::uint32_t kInitialRepeatDelayMs = 450;
 constexpr std::uint32_t kRepeatIntervalMs = 150;
@@ -39,6 +41,10 @@ RemoteScreen remoteScreen(lgProfile);
 
 AndroidTvRemoteState lastWifiState = AndroidTvRemoteState::Disabled;
 String pairingCode;
+bool wifiRemoteStarted = false;
+unsigned long lastHealthLogMs = 0;
+unsigned long maxLoopDurationMs = 0;
+unsigned long maxNetworkTickMs = 0;
 
 const TvProfile& activeProfile() {
     return *kProfiles[activeProfileIndex];
@@ -137,6 +143,20 @@ void updateWifiStateUi() {
     }
 }
 
+void startWifiRemoteIfNeeded() {
+    if (wifiRemoteStarted) {
+        return;
+    }
+
+    wifiRemoteStarted = true;
+    Serial.println("Starting Android TV Wi-Fi remote after Xiaomi profile selection");
+    androidTvRemote.begin(
+        kDeviceConfig.wifiSsid,
+        kDeviceConfig.wifiPassword
+    );
+    lastWifiState = androidTvRemote.state();
+}
+
 void selectNextProfile() {
     activeProfileIndex = static_cast<std::uint8_t>((activeProfileIndex + 1) % kProfileCount);
     const TvProfile& profile = activeProfile();
@@ -147,6 +167,7 @@ void selectNextProfile() {
     Serial.printf("Selected profile: %s %s\n", profile.brand(), profile.model());
 
     if (xiaomiSelected()) {
+        startWifiRemoteIfNeeded();
         showWifiState(androidTvRemote.state());
     }
 }
@@ -248,6 +269,14 @@ void handleKeyboard() {
     const bool pressed = M5Cardputer.Keyboard.isPressed();
     const auto& state = M5Cardputer.Keyboard.keysState();
 
+    if (pressed && containsProfileSwitchKey(state)) {
+        if (inputChanged) {
+            Serial.println("Keyboard: profile switch requested");
+            selectNextProfile();
+        }
+        return;
+    }
+
     if (
         xiaomiSelected() &&
         androidTvRemote.pairingCodeRequired()
@@ -255,13 +284,6 @@ void handleKeyboard() {
         remoteApplication.reset();
         if (pressed && inputChanged) {
             handlePairingInput(state);
-        }
-        return;
-    }
-
-    if (pressed && containsProfileSwitchKey(state)) {
-        if (inputChanged) {
-            selectNextProfile();
         }
         return;
     }
@@ -282,11 +304,25 @@ void handleKeyboard() {
     }
 }
 
-void initializeWifiRemote() {
-    androidTvRemote.begin(
-        kDeviceConfig.wifiSsid,
-        kDeviceConfig.wifiPassword
+void logHealthIfDue(unsigned long now) {
+    if (now - lastHealthLogMs < kHealthLogIntervalMs) {
+        return;
+    }
+
+    lastHealthLogMs = now;
+    Serial.printf(
+        "HEALTH uptime=%lu profile=%s wifi-started=%s state=%s free-heap=%u max-loop-ms=%lu max-network-ms=%lu\n",
+        now,
+        activeProfile().brand(),
+        wifiRemoteStarted ? "yes" : "no",
+        androidTvRemote.stateLabel(),
+        static_cast<unsigned int>(ESP.getFreeHeap()),
+        maxLoopDurationMs,
+        maxNetworkTickMs
     );
+
+    maxLoopDurationMs = 0;
+    maxNetworkTickMs = 0;
 }
 }  // namespace
 
@@ -298,13 +334,11 @@ void setup() {
     M5Cardputer.Display.setRotation(1);
     irTransmitter.begin();
     remoteScreen.begin();
-    initializeWifiRemote();
-    lastWifiState = androidTvRemote.state();
 
-    Serial.println("GlobalController TV-009 ready");
+    Serial.println("GlobalController TV-009 responsive-runtime build ready");
     Serial.printf("Loaded profile: %s %s\n", activeProfile().brand(), activeProfile().model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
-    Serial.printf("Android TV remote: %s\n", androidTvRemote.stateLabel());
+    Serial.println("Android TV Wi-Fi startup is deferred until Xiaomi is selected");
     Serial.printf(
         "Repeat timing: initial=%lu ms interval=%lu ms\n",
         static_cast<unsigned long>(kInitialRepeatDelayMs),
@@ -313,9 +347,32 @@ void setup() {
 }
 
 void loop() {
+    const unsigned long loopStartedMs = millis();
+
     M5Cardputer.update();
-    androidTvRemote.loop();
-    updateWifiStateUi();
     handleKeyboard();
+
+    if (wifiRemoteStarted && xiaomiSelected()) {
+        const unsigned long networkStartedMs = millis();
+        androidTvRemote.loop();
+        const unsigned long networkDurationMs = millis() - networkStartedMs;
+        if (networkDurationMs > maxNetworkTickMs) {
+            maxNetworkTickMs = networkDurationMs;
+        }
+        if (networkDurationMs >= kSlowNetworkTickMs) {
+            Serial.printf(
+                "SLOW NETWORK TICK duration=%lu ms state=%s\n",
+                networkDurationMs,
+                androidTvRemote.stateLabel()
+            );
+        }
+        updateWifiStateUi();
+    }
+
+    const unsigned long loopDurationMs = millis() - loopStartedMs;
+    if (loopDurationMs > maxLoopDurationMs) {
+        maxLoopDurationMs = loopDurationMs;
+    }
+    logHealthIfDue(millis());
     delay(kLoopDelayMs);
 }
