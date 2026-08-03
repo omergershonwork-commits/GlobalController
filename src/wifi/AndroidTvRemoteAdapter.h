@@ -45,10 +45,10 @@ private:
 
     RemoteManager remoteManager_;
     PairingManager pairingManager_;
-    AndroidTvRemoteState state_;
+    volatile AndroidTvRemoteState state_;
     IPAddress tvIp_;
     std::uint16_t remotePort_;
-    bool configured_;
+    volatile bool configured_;
     bool pairingCodeSubmitted_;
     bool mdnsStarted_;
     unsigned long lastDiscoveryAttemptMs_;
