@@ -29,9 +29,7 @@ AndroidTvRemoteRuntime::AndroidTvRemoteRuntime(AndroidTvRemoteAdapter& adapter)
       configured_(false),
       workerActive_(false),
       maxTickDurationMs_(0),
-      minimumFreeStackBytes_(kTaskStackBytes),
-      pairingCodePending_(false),
-      pendingPairingCode_{} {}
+      minimumFreeStackBytes_(kTaskStackBytes) {}
 
 bool AndroidTvRemoteRuntime::begin() {
     if (task_ != nullptr) {
@@ -117,7 +115,7 @@ bool AndroidTvRemoteRuntime::send(TvCommand command) {
 }
 
 bool AndroidTvRemoteRuntime::submitPairingCode(const String& code) {
-    if (!requested_ || queue_ == nullptr || code.length() != 6) {
+    if (!pairingCodeRequired() || queue_ == nullptr || code.length() != 6) {
         return false;
     }
 
@@ -183,7 +181,6 @@ void AndroidTvRemoteRuntime::run() {
         if (workerActive_ && requested_) {
             const unsigned long startedMs = millis();
             adapter_.loop();
-            processPendingPairingCode();
             const unsigned long durationMs = millis() - startedMs;
             if (durationMs > maxTickDurationMs_) {
                 maxTickDurationMs_ = durationMs;
@@ -204,13 +201,11 @@ void AndroidTvRemoteRuntime::handleMessage(const Message& message) {
             if (workerActive_) {
                 adapter_.cancel();
             }
-            clearPendingPairingCode();
             adapter_.begin(message.ssid, message.password);
             workerActive_ = adapter_.configured();
             return;
 
         case MessageType::Cancel:
-            clearPendingPairingCode();
             if (workerActive_) {
                 adapter_.cancel();
             }
@@ -224,17 +219,8 @@ void AndroidTvRemoteRuntime::handleMessage(const Message& message) {
             return;
 
         case MessageType::PairingCode:
-            if (workerActive_ && requested_) {
-                copyText(
-                    pendingPairingCode_,
-                    sizeof(pendingPairingCode_),
-                    message.pairingCode
-                );
-                pairingCodePending_ = true;
-                Serial.println(
-                    "Pairing code queued; it will be submitted when the TV handshake is ready"
-                );
-                processPendingPairingCode();
+            if (workerActive_ && requested_ && adapter_.pairingCodeRequired()) {
+                adapter_.submitPairingCode(String(message.pairingCode));
             }
             return;
     }
@@ -255,29 +241,6 @@ bool AndroidTvRemoteRuntime::enqueue(const Message& message, bool urgent) {
     }
 
     return true;
-}
-
-void AndroidTvRemoteRuntime::processPendingPairingCode() {
-    if (
-        !pairingCodePending_ ||
-        !workerActive_ ||
-        !requested_ ||
-        !adapter_.pairingCodeRequired()
-    ) {
-        return;
-    }
-
-    if (adapter_.submitPairingCode(String(pendingPairingCode_))) {
-        Serial.println("Queued pairing code submitted to the television");
-        clearPendingPairingCode();
-    } else {
-        Serial.println("Pairing code submission failed; keeping it queued for retry");
-    }
-}
-
-void AndroidTvRemoteRuntime::clearPendingPairingCode() {
-    pairingCodePending_ = false;
-    pendingPairingCode_[0] = '\0';
 }
 
 void AndroidTvRemoteRuntime::sampleStackWatermark() {
