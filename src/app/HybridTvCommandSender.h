@@ -2,13 +2,13 @@
 
 #include "TvCommandSender.h"
 #include "ir/IrTransmitter.h"
-#include "wifi/AndroidTvRemoteAdapter.h"
+#include "wifi/AndroidTvRemoteRuntime.h"
 
 class HybridTvCommandSender final : public TvCommandSender {
 public:
     HybridTvCommandSender(
         IrTransmitter& infraredTransmitter,
-        AndroidTvRemoteAdapter& wifiRemote
+        AndroidTvRemoteRuntime& wifiRemote
     );
 
     CommandDeliveryResult send(
@@ -25,5 +25,5 @@ private:
     CommandDeliveryResult sendWifi(TvCommand command);
 
     IrTransmitter& infraredTransmitter_;
-    AndroidTvRemoteAdapter& wifiRemote_;
+    AndroidTvRemoteRuntime& wifiRemote_;
 };
