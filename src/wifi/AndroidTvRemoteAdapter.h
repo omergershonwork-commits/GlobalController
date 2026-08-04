@@ -27,6 +27,7 @@ public:
     void cancel();
     void loop();
 
+    bool requestPairing();
     bool submitPairingCode(const String& code);
     bool send(TvCommand command);
 
