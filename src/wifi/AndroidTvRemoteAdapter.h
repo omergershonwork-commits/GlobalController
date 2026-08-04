@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 
 #include "domain/TvCommand.h"
@@ -42,16 +43,20 @@ private:
     bool discoverTv();
     void connectRemote();
     void startPairing();
+    void setPairingKnown(bool known);
     static bool toRemoteKey(TvCommand command, Remote__RemoteKeyCode& keyCode);
 
     RemoteManager remoteManager_;
     PairingManager pairingManager_;
+    Preferences preferences_;
     volatile AndroidTvRemoteState state_;
     IPAddress tvIp_;
     std::uint16_t remotePort_;
     volatile bool configured_;
     bool pairingCodeSubmitted_;
     bool mdnsStarted_;
+    bool preferencesOpened_;
+    bool pairingKnown_;
     unsigned long lastDiscoveryAttemptMs_;
     char pairingServiceName_[24];
 };
