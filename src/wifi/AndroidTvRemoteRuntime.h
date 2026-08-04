@@ -15,6 +15,7 @@ public:
     bool start(const char* ssid, const char* password);
     bool cancel();
     bool requestPairing();
+    bool skipCandidate();
     bool send(TvCommand command);
     bool submitPairingCode(const String& code);
 
@@ -25,6 +26,16 @@ public:
     bool requested() const;
     const char* stateLabel() const;
 
+    void candidateStatus(
+        char* hostname,
+        std::size_t hostnameCapacity,
+        char* ipAddress,
+        std::size_t ipAddressCapacity,
+        std::uint8_t& candidateNumber,
+        std::uint8_t& candidateCount,
+        std::uint32_t& revision
+    ) const;
+
     unsigned long maxTickDurationMs();
     std::uint32_t minimumFreeStackBytes() const;
     std::uint32_t configuredStackBytes() const;
@@ -34,6 +45,7 @@ private:
         Start,
         Cancel,
         BeginPairing,
+        SkipCandidate,
         SendCommand,
         PairingCode,
     };
