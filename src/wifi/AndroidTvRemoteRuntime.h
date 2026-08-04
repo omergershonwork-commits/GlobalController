@@ -14,6 +14,7 @@ public:
     bool begin();
     bool start(const char* ssid, const char* password);
     bool cancel();
+    bool requestPairing();
     bool send(TvCommand command);
     bool submitPairingCode(const String& code);
 
@@ -32,6 +33,7 @@ private:
     enum class MessageType : std::uint8_t {
         Start,
         Cancel,
+        BeginPairing,
         SendCommand,
         PairingCode,
     };
