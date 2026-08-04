@@ -103,6 +103,16 @@ bool AndroidTvRemoteRuntime::cancel() {
     return enqueue(message, true);
 }
 
+bool AndroidTvRemoteRuntime::requestPairing() {
+    if (!requested_ || queue_ == nullptr) {
+        return false;
+    }
+
+    Message message{};
+    message.type = MessageType::BeginPairing;
+    return enqueue(message, true);
+}
+
 bool AndroidTvRemoteRuntime::send(TvCommand command) {
     if (!ready() || queue_ == nullptr) {
         return false;
@@ -210,6 +220,12 @@ void AndroidTvRemoteRuntime::handleMessage(const Message& message) {
                 adapter_.cancel();
             }
             workerActive_ = false;
+            return;
+
+        case MessageType::BeginPairing:
+            if (workerActive_ && requested_) {
+                adapter_.requestPairing();
+            }
             return;
 
         case MessageType::SendCommand:
