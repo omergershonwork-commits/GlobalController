@@ -119,7 +119,7 @@ void RemoteScreen::showMessage(
         std::snprintf(
             pairingDetail,
             sizeof(pairingDetail),
-            "%s  ENTER=SEND  N=CANCEL",
+            "%s ENTER=SEND S=NEXT N=STOP",
             detail == nullptr ? "Code: ______" : detail
         );
         drawStatus(state, pairingDetail, accentColor);
@@ -274,10 +274,10 @@ void RemoteScreen::drawLayout() {
     drawIndicators();
     display.drawFastHLine(0, 35, display.width(), GREEN);
 
-    drawHintRow("[T] TV [N] WIFI [G] METRICS", 42);
-    drawHintRow("[P] POWER [I] INPUT [H] HOME", 57);
-    drawHintRow("[R/F] CH [U/J] VOL [WASD] MOVE", 72);
-    drawHintRow("[ENTER/O] OK    [DEL/B] BACK", 87);
+    drawHintRow("[T] TV [N] WIFI [S] NEXT", 42);
+    drawHintRow("[G] METRICS [P] POWER [H] HOME", 57);
+    drawHintRow("[I] INPUT [R/F] CH [U/J] VOL", 72);
+    drawHintRow("[WASD] MOVE [ENTER/O] OK [DEL/B] BACK", 87);
 
     display.drawFastHLine(0, kStatusTop, display.width(), WHITE);
 }
