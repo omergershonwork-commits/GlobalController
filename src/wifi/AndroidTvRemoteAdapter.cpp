@@ -88,6 +88,30 @@ void AndroidTvRemoteAdapter::cancel() {
     Serial.println("Android TV Wi-Fi remote cancelled");
 }
 
+bool AndroidTvRemoteAdapter::requestPairing() {
+    if (
+        !configured_ ||
+        WiFi.status() != WL_CONNECTED ||
+        !isValidAddress(tvIp_)
+    ) {
+        Serial.println("Cannot start pairing before Wi-Fi and TV discovery complete");
+        return false;
+    }
+
+    switch (state_) {
+        case AndroidTvRemoteState::RemoteConnecting:
+        case AndroidTvRemoteState::PairingConnecting:
+        case AndroidTvRemoteState::PairingCodeRequired:
+            Serial.println("Explicit Android TV pairing requested");
+            startPairing();
+            return state_ != AndroidTvRemoteState::Error;
+
+        default:
+            Serial.println("Explicit pairing request ignored in the current state");
+            return false;
+    }
+}
+
 void AndroidTvRemoteAdapter::loop() {
     switch (state_) {
         case AndroidTvRemoteState::Disabled:
@@ -136,6 +160,7 @@ void AndroidTvRemoteAdapter::loop() {
 
             if (remoteManager_.error_auth) {
                 remoteManager_.error_auth = false;
+                Serial.println("Remote authentication failed; starting pairing service");
                 startPairing();
                 return;
             }
@@ -369,23 +394,35 @@ bool AndroidTvRemoteAdapter::discoverTv() {
 
 void AndroidTvRemoteAdapter::connectRemote() {
     state_ = AndroidTvRemoteState::RemoteConnecting;
+    remoteManager_.error_auth = false;
     remoteManager_.start(tvIp_, remotePort_);
 
-    if (remoteManager_.connected()) {
-        state_ = AndroidTvRemoteState::Ready;
-        Serial.printf(
-            "Android TV remote connected to %s:%u\n",
-            tvIp_.toString().c_str(),
-            remotePort_
-        );
+    if (remoteManager_.error_auth || !remoteManager_.connected()) {
+        remoteManager_.error_auth = false;
+        Serial.println("Remote connection is not authenticated; falling back to pairing");
+        startPairing();
+        return;
     }
+
+    state_ = AndroidTvRemoteState::Ready;
+    Serial.printf(
+        "Android TV remote connected to %s:%u\n",
+        tvIp_.toString().c_str(),
+        remotePort_
+    );
 }
 
 void AndroidTvRemoteAdapter::startPairing() {
+    remoteManager_.stop();
     state_ = AndroidTvRemoteState::PairingConnecting;
     pairingCodeSubmitted_ = false;
     pairingManager_.isSecure = false;
     pairingManager_.begin(tvIp_, kPairingPort, pairingServiceName_);
+
+    if (!pairingManager_.connected()) {
+        state_ = AndroidTvRemoteState::Error;
+        Serial.println("Unable to connect to Android TV pairing service on port 6467");
+    }
 }
 
 bool AndroidTvRemoteAdapter::toRemoteKey(
