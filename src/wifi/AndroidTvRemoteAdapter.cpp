@@ -14,6 +14,8 @@ constexpr unsigned long kDiscoveryRetryMs = 5000;
 constexpr const char* kAndroidTvService = "androidtvremote2";
 constexpr const char* kAndroidTvProtocol = "tcp";
 constexpr const char* kPairingServiceName = "GlobalController";
+constexpr const char* kPreferencesNamespace = "globalctrl";
+constexpr const char* kPairingKnownKey = "xiaomiPair";
 
 bool isEmpty(const char* value) {
     return value == nullptr || value[0] == '\0';
@@ -37,6 +39,8 @@ AndroidTvRemoteAdapter::AndroidTvRemoteAdapter()
       configured_(false),
       pairingCodeSubmitted_(false),
       mdnsStarted_(false),
+      preferencesOpened_(false),
+      pairingKnown_(false),
       lastDiscoveryAttemptMs_(0),
       pairingServiceName_{} {
     std::strncpy(
@@ -54,6 +58,19 @@ void AndroidTvRemoteAdapter::begin(
     pairingCodeSubmitted_ = false;
     tvIp_ = IPAddress(0, 0, 0, 0);
     remotePort_ = kDefaultRemotePort;
+
+    if (!preferencesOpened_) {
+        preferencesOpened_ = preferences_.begin(kPreferencesNamespace, false);
+        if (!preferencesOpened_) {
+            Serial.println("Unable to open local pairing preferences; pairing will be requested");
+        }
+    }
+
+    pairingKnown_ = preferencesOpened_ && preferences_.getBool(kPairingKnownKey, false);
+    Serial.printf(
+        "Stored Xiaomi pairing state: %s\n",
+        pairingKnown_ ? "paired" : "not paired"
+    );
 
     if (!configured_) {
         state_ = AndroidTvRemoteState::Disabled;
@@ -103,6 +120,7 @@ bool AndroidTvRemoteAdapter::requestPairing() {
         case AndroidTvRemoteState::PairingConnecting:
         case AndroidTvRemoteState::PairingCodeRequired:
             Serial.println("Explicit Android TV pairing requested");
+            setPairingKnown(false);
             startPairing();
             return state_ != AndroidTvRemoteState::Error;
 
@@ -161,6 +179,7 @@ void AndroidTvRemoteAdapter::loop() {
             if (remoteManager_.error_auth) {
                 remoteManager_.error_auth = false;
                 Serial.println("Remote authentication failed; starting pairing service");
+                setPairingKnown(false);
                 startPairing();
                 return;
             }
@@ -195,6 +214,7 @@ void AndroidTvRemoteAdapter::loop() {
                 !pairingManager_.connected()
             ) {
                 pairingCodeSubmitted_ = false;
+                setPairingKnown(true);
                 connectRemote();
             }
             return;
@@ -388,7 +408,13 @@ bool AndroidTvRemoteAdapter::discoverTv() {
         remotePort_
     );
 
-    connectRemote();
+    if (pairingKnown_) {
+        Serial.println("Known pairing found; attempting Android TV remote connection");
+        connectRemote();
+    } else {
+        Serial.println("No stored pairing found; starting pairing before remote connection");
+        startPairing();
+    }
     return true;
 }
 
@@ -400,6 +426,7 @@ void AndroidTvRemoteAdapter::connectRemote() {
     if (remoteManager_.error_auth || !remoteManager_.connected()) {
         remoteManager_.error_auth = false;
         Serial.println("Remote connection is not authenticated; falling back to pairing");
+        setPairingKnown(false);
         startPairing();
         return;
     }
@@ -423,6 +450,18 @@ void AndroidTvRemoteAdapter::startPairing() {
         state_ = AndroidTvRemoteState::Error;
         Serial.println("Unable to connect to Android TV pairing service on port 6467");
     }
+}
+
+void AndroidTvRemoteAdapter::setPairingKnown(bool known) {
+    pairingKnown_ = known;
+    if (preferencesOpened_) {
+        preferences_.putBool(kPairingKnownKey, known);
+    }
+
+    Serial.printf(
+        "Stored Xiaomi pairing state updated: %s\n",
+        known ? "paired" : "not paired"
+    );
 }
 
 bool AndroidTvRemoteAdapter::toRemoteKey(
