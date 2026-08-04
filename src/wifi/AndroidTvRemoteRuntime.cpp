@@ -113,6 +113,16 @@ bool AndroidTvRemoteRuntime::requestPairing() {
     return enqueue(message, true);
 }
 
+bool AndroidTvRemoteRuntime::skipCandidate() {
+    if (!requested_ || queue_ == nullptr) {
+        return false;
+    }
+
+    Message message{};
+    message.type = MessageType::SkipCandidate;
+    return enqueue(message, true);
+}
+
 bool AndroidTvRemoteRuntime::send(TvCommand command) {
     if (!ready() || queue_ == nullptr) {
         return false;
@@ -157,6 +167,26 @@ bool AndroidTvRemoteRuntime::requested() const {
 
 const char* AndroidTvRemoteRuntime::stateLabel() const {
     return requested_ ? adapter_.stateLabel() : "Wi-Fi remote stopped";
+}
+
+void AndroidTvRemoteRuntime::candidateStatus(
+    char* hostname,
+    std::size_t hostnameCapacity,
+    char* ipAddress,
+    std::size_t ipAddressCapacity,
+    std::uint8_t& candidateNumber,
+    std::uint8_t& candidateCount,
+    std::uint32_t& revision
+) const {
+    adapter_.candidateStatus(
+        hostname,
+        hostnameCapacity,
+        ipAddress,
+        ipAddressCapacity,
+        candidateNumber,
+        candidateCount,
+        revision
+    );
 }
 
 unsigned long AndroidTvRemoteRuntime::maxTickDurationMs() {
@@ -225,6 +255,12 @@ void AndroidTvRemoteRuntime::handleMessage(const Message& message) {
         case MessageType::BeginPairing:
             if (workerActive_ && requested_) {
                 adapter_.requestPairing();
+            }
+            return;
+
+        case MessageType::SkipCandidate:
+            if (workerActive_ && requested_) {
+                adapter_.skipCurrentCandidate();
             }
             return;
 
