@@ -3,7 +3,6 @@ import re
 
 Import("env")
 
-
 _WIFI_CLIENT_SECURE_INCLUDE_PATTERN = re.compile(
     r'^[ \t]*#[ \t]*include[ \t]*[<"]WiFiClientSecure\.h[>"][ \t]*(?://.*)?(?:\r?\n|$)',
     re.MULTILINE,
@@ -22,11 +21,16 @@ _WOLFSSL_SERIAL_DECLARATION_PATTERN = re.compile(
     r'\([ \t]*const[ \t]+char\s*\*[ \t]*const[ \t]+s[ \t]*\)[ \t]*;[ \t]*$',
     re.MULTILINE,
 )
+
 _MARKER_FILE = ".globalcontroller_compatibility_patch_applied"
 _SOURCE_SUFFIXES = {".h", ".hpp", ".cpp"}
+_REMOTE_CLIENT_PATH = Path("src/RemoteClient.cpp")
+_REMOTE_MANAGER_PATH = Path("src/remote/RemoteManager.cpp")
 _REMOTE_MESSAGE_MANAGER_PATH = Path("src/remote/RemoteMessageManager.cpp")
 _PAIRING_MANAGER_PATH = Path("src/pairing/PairingManager.cpp")
 _WOLFSSL_HEADER_PATH = Path("src/wolfssl.h")
+_SAFE_REMOTE_CLIENT_SOURCE = Path("scripts/android_tv_remote/RemoteClient.cpp")
+
 _PAIRING_UNPACK_STATEMENT = (
     "        Pairing__PairingMessage *response = "
     "pairing__pairing_message__unpack(NULL, chunks.size() - 1, chunks.data() + 1);\n"
@@ -38,6 +42,27 @@ _PAIRING_NULL_GUARD = (
     "            return;\n"
     "        }\n"
 )
+_REMOTE_UNPACK_STATEMENT = (
+    "        Remote__RemoteMessage *message = "
+    "remote__remote_message__unpack(NULL, chunks.size() - 1, chunks.data() + 1);\n"
+)
+_REMOTE_NULL_GUARD = (
+    "        if (message == nullptr) {\n"
+    "            Serial.println(\"[ERROR]: Failed to decode Android TV remote response\");\n"
+    "            chunks.clear();\n"
+    "            return;\n"
+    "        }\n"
+)
+_PAIRING_CERTIFICATES = (
+    "    WOLFSSL_X509 *server_cert = ssl_get_peer_certificate();\n"
+    "    WOLFSSL_X509 *client_cert = ssl_get_certificate();\n"
+)
+_PAIRING_CERTIFICATE_GUARD = (
+    "\n    if (server_cert == nullptr || client_cert == nullptr) {\n"
+    "        Serial.println(\"[ERROR]: Pairing certificates are unavailable\");\n"
+    "        return false;\n"
+    "    }\n"
+)
 
 
 def source_files(dependency_root: Path):
@@ -48,73 +73,96 @@ def source_files(dependency_root: Path):
 
 def remove_wifi_client_secure_includes(dependency_root: Path):
     patched_files = []
-
     for path in source_files(dependency_root):
         content = path.read_text(encoding="utf-8")
-        patched_content, replacements = _WIFI_CLIENT_SECURE_INCLUDE_PATTERN.subn("", content)
-        if replacements == 0:
-            continue
+        patched, replacements = _WIFI_CLIENT_SECURE_INCLUDE_PATTERN.subn("", content)
+        if replacements:
+            path.write_text(patched, encoding="utf-8")
+            patched_files.append(path.relative_to(dependency_root).as_posix())
 
-        path.write_text(patched_content, encoding="utf-8")
-        patched_files.append(path.relative_to(dependency_root).as_posix())
-
-    remaining_include_files = []
+    remaining = []
     for path in source_files(dependency_root):
-        content = path.read_text(encoding="utf-8")
-        if _WIFI_CLIENT_SECURE_INCLUDE_PATTERN.search(content):
-            remaining_include_files.append(path.relative_to(dependency_root).as_posix())
+        if _WIFI_CLIENT_SECURE_INCLUDE_PATTERN.search(
+            path.read_text(encoding="utf-8")
+        ):
+            remaining.append(path.relative_to(dependency_root).as_posix())
 
-    if remaining_include_files:
+    if remaining:
         raise RuntimeError(
             "AndroidTvRemote still imports WiFiClientSecure in: "
-            + ", ".join(remaining_include_files)
+            + ", ".join(remaining)
         )
 
     return patched_files
 
 
-def ensure_arduino_serial_declaration(dependency_root: Path) -> bool:
+def ensure_arduino_include(dependency_root: Path) -> bool:
     path = dependency_root / _REMOTE_MESSAGE_MANAGER_PATH
     if not path.exists():
-        raise RuntimeError(
-            "AndroidTvRemote RemoteMessageManager.cpp is missing from the pinned dependency"
-        )
+        raise RuntimeError("AndroidTvRemote RemoteMessageManager.cpp is missing")
 
     content = path.read_text(encoding="utf-8")
-    if "Serial" not in content:
-        return False
-
-    if _ARDUINO_INCLUDE_PATTERN.search(content):
+    if "Serial" not in content or _ARDUINO_INCLUDE_PATTERN.search(content):
         return False
 
     path.write_text("#include <Arduino.h>\n" + content, encoding="utf-8")
     return True
 
 
-def harden_pairing_response_unpack(dependency_root: Path) -> bool:
-    path = dependency_root / _PAIRING_MANAGER_PATH
-    if not path.exists():
-        raise RuntimeError(
-            "AndroidTvRemote PairingManager.cpp is missing from the pinned dependency"
-        )
-
+def insert_once(path: Path, statement: str, addition: str, description: str) -> bool:
     content = path.read_text(encoding="utf-8")
-    if _PAIRING_NULL_GUARD.strip() in content:
+    if addition.strip() in content:
+        return False
+    if statement not in content:
+        raise RuntimeError(f"Expected {description} statement was not found")
+    path.write_text(content.replace(statement, statement + addition, 1), encoding="utf-8")
+    return True
+
+
+def harden_protocol_decoding(dependency_root: Path):
+    pairing_path = dependency_root / _PAIRING_MANAGER_PATH
+    remote_path = dependency_root / _REMOTE_MANAGER_PATH
+    if not pairing_path.exists() or not remote_path.exists():
+        raise RuntimeError("AndroidTvRemote manager source files are missing")
+
+    pairing_guard = insert_once(
+        pairing_path,
+        _PAIRING_UNPACK_STATEMENT,
+        _PAIRING_NULL_GUARD,
+        "pairing unpack",
+    )
+    remote_guard = insert_once(
+        remote_path,
+        _REMOTE_UNPACK_STATEMENT,
+        _REMOTE_NULL_GUARD,
+        "remote unpack",
+    )
+    certificate_guard = insert_once(
+        pairing_path,
+        _PAIRING_CERTIFICATES,
+        _PAIRING_CERTIFICATE_GUARD,
+        "pairing certificate",
+    )
+    return pairing_guard, remote_guard, certificate_guard
+
+
+def replace_remote_client_transport(dependency_root: Path) -> bool:
+    project_root = Path(env.subst("$PROJECT_DIR"))
+    safe_source_path = project_root / _SAFE_REMOTE_CLIENT_SOURCE
+    target_path = dependency_root / _REMOTE_CLIENT_PATH
+
+    if not safe_source_path.exists():
+        raise RuntimeError(
+            "GlobalController safe Android TV RemoteClient.cpp source is missing"
+        )
+    if not target_path.exists():
+        raise RuntimeError("Pinned AndroidTvRemote RemoteClient.cpp is missing")
+
+    safe_content = safe_source_path.read_text(encoding="utf-8")
+    if target_path.read_text(encoding="utf-8") == safe_content:
         return False
 
-    if _PAIRING_UNPACK_STATEMENT not in content:
-        raise RuntimeError(
-            "Expected AndroidTvRemote pairing unpack statement was not found"
-        )
-
-    path.write_text(
-        content.replace(
-            _PAIRING_UNPACK_STATEMENT,
-            _PAIRING_UNPACK_STATEMENT + _PAIRING_NULL_GUARD,
-            1,
-        ),
-        encoding="utf-8",
-    )
+    target_path.write_text(safe_content, encoding="utf-8")
     return True
 
 
@@ -128,139 +176,101 @@ def find_closing_brace(content: str, opening_brace_index: int) -> int:
             depth -= 1
             if depth == 0:
                 return index
-
-    raise RuntimeError(
-        "wolfSSL_Arduino_Serial_Print has an unterminated function body"
-    )
+    raise RuntimeError("wolfSSL_Arduino_Serial_Print has an unterminated body")
 
 
 def ensure_wolfssl_serial_helper_is_declaration(wolfssl_root: Path) -> bool:
     path = wolfssl_root / _WOLFSSL_HEADER_PATH
     if not path.exists():
-        raise RuntimeError(
-            "Arduino-wolfSSL src/wolfssl.h is missing from the pinned dependency"
-        )
+        raise RuntimeError("Arduino-wolfSSL src/wolfssl.h is missing")
 
     content = path.read_text(encoding="utf-8")
-    signature_match = _WOLFSSL_SERIAL_SIGNATURE_PATTERN.search(content)
-    if signature_match is None:
-        raise RuntimeError(
-            "Expected wolfSSL_Arduino_Serial_Print signature was not found in "
-            "Arduino-wolfSSL src/wolfssl.h"
-        )
+    match = _WOLFSSL_SERIAL_SIGNATURE_PATTERN.search(content)
+    if match is None:
+        raise RuntimeError("Expected wolfSSL_Arduino_Serial_Print signature was not found")
 
-    suffix_index = signature_match.end()
+    suffix_index = match.end()
     while suffix_index < len(content) and content[suffix_index].isspace():
         suffix_index += 1
 
-    canonical_declaration = (
-        signature_match.group("indent")
+    declaration = (
+        match.group("indent")
         + "int wolfSSL_Arduino_Serial_Print(const char* const s);"
     )
 
     if suffix_index < len(content) and content[suffix_index] == ";":
-        current_declaration = content[signature_match.start():suffix_index + 1]
-        if current_declaration == canonical_declaration:
+        current = content[match.start():suffix_index + 1]
+        if current == declaration:
             return False
-
         path.write_text(
-            content[:signature_match.start()]
-            + canonical_declaration
-            + content[suffix_index + 1:],
+            content[:match.start()] + declaration + content[suffix_index + 1:],
             encoding="utf-8",
         )
         return True
 
     if suffix_index >= len(content) or content[suffix_index] != "{":
-        raise RuntimeError(
-            "wolfSSL_Arduino_Serial_Print is neither a declaration nor a function definition"
-        )
+        raise RuntimeError("wolfSSL serial helper is neither declaration nor definition")
 
-    closing_brace_index = find_closing_brace(content, suffix_index)
-    replacement_end = closing_brace_index + 1
+    closing = find_closing_brace(content, suffix_index)
+    replacement_end = closing + 1
     while replacement_end < len(content) and content[replacement_end] in " \t":
         replacement_end += 1
     if replacement_end < len(content) and content[replacement_end] == ";":
         replacement_end += 1
 
     path.write_text(
-        content[:signature_match.start()]
-        + canonical_declaration
-        + content[replacement_end:],
+        content[:match.start()] + declaration + content[replacement_end:],
         encoding="utf-8",
     )
 
-    verified_content = path.read_text(encoding="utf-8")
-    if not _WOLFSSL_SERIAL_DECLARATION_PATTERN.search(verified_content):
-        raise RuntimeError(
-            "Failed to replace wolfSSL_Arduino_Serial_Print with a declaration"
-        )
-
+    if not _WOLFSSL_SERIAL_DECLARATION_PATTERN.search(
+        path.read_text(encoding="utf-8")
+    ):
+        raise RuntimeError("Failed to replace wolfSSL serial helper")
     return True
 
 
 def patch_dependencies() -> None:
-    libdeps_root = (
-        Path(env.subst("$PROJECT_LIBDEPS_DIR"))
-        / env.subst("$PIOENV")
-    )
+    libdeps_root = Path(env.subst("$PROJECT_LIBDEPS_DIR")) / env.subst("$PIOENV")
     android_tv_root = libdeps_root / "AndroidTvRemote"
     wolfssl_root = libdeps_root / "Arduino-wolfSSL"
 
-    # PlatformIO executes pre-scripts for clean targets too. A clean can run
-    # before dependencies exist or after they have already been removed.
     if not android_tv_root.exists() and not wolfssl_root.exists():
-        print(
-            "GlobalController dependency compatibility patch: dependencies are absent; "
-            "nothing to patch"
-        )
+        print("GlobalController compatibility patch: dependencies absent; nothing to patch")
         return
+    if not android_tv_root.exists() or not wolfssl_root.exists():
+        raise RuntimeError("Android TV or wolfSSL dependency is missing")
 
-    if not android_tv_root.exists():
-        raise RuntimeError(
-            "AndroidTvRemote dependency is missing while Arduino-wolfSSL is present"
-        )
-    if not wolfssl_root.exists():
-        raise RuntimeError(
-            "Arduino-wolfSSL dependency is missing while AndroidTvRemote is present"
-        )
+    removed_includes = remove_wifi_client_secure_includes(android_tv_root)
+    added_arduino = ensure_arduino_include(android_tv_root)
+    pairing_guard, remote_guard, certificate_guard = harden_protocol_decoding(
+        android_tv_root
+    )
+    replaced_transport = replace_remote_client_transport(android_tv_root)
+    changed_wolfssl = ensure_wolfssl_serial_helper_is_declaration(wolfssl_root)
 
-    patched_include_files = remove_wifi_client_secure_includes(android_tv_root)
-    added_arduino_include = ensure_arduino_serial_declaration(android_tv_root)
-    hardened_pairing_unpack = harden_pairing_response_unpack(android_tv_root)
-    changed_wolfssl_helper = ensure_wolfssl_serial_helper_is_declaration(wolfssl_root)
-
-    marker_path = android_tv_root / _MARKER_FILE
-    marker_path.write_text("compatible\n", encoding="utf-8")
+    (android_tv_root / _MARKER_FILE).write_text("compatible\n", encoding="utf-8")
 
     changes = []
-    if patched_include_files:
-        changes.append(
-            "removed unused WiFiClientSecure includes from "
-            + ", ".join(patched_include_files)
-        )
-    if added_arduino_include:
-        changes.append(
-            "added Arduino.h to src/remote/RemoteMessageManager.cpp for Serial"
-        )
-    if hardened_pairing_unpack:
-        changes.append(
-            "added a null guard for malformed Android TV pairing responses"
-        )
-    if changed_wolfssl_helper:
-        changes.append(
-            "replaced Arduino-wolfSSL serial helper definition with a declaration"
-        )
+    if removed_includes:
+        changes.append("removed WiFiClientSecure includes")
+    if added_arduino:
+        changes.append("added Arduino.h for Serial")
+    if pairing_guard:
+        changes.append("guarded pairing protobuf decoding")
+    if remote_guard:
+        changes.append("guarded remote protobuf decoding")
+    if certificate_guard:
+        changes.append("guarded pairing certificates")
+    if replaced_transport:
+        changes.append("installed checked TLS transport")
+    if changed_wolfssl:
+        changes.append("fixed wolfSSL serial helper linkage")
 
-    if changes:
-        print(
-            "GlobalController dependency compatibility patch: "
-            + "; ".join(changes)
-        )
-    else:
-        print(
-            "GlobalController dependency compatibility patch: dependencies already compatible"
-        )
+    print(
+        "GlobalController compatibility patch: "
+        + ("; ".join(changes) if changes else "dependencies already compatible")
+    )
 
 
 patch_dependencies()
