@@ -119,7 +119,7 @@ void RemoteScreen::showMessage(
         std::snprintf(
             pairingDetail,
             sizeof(pairingDetail),
-            "%s ENTER=SEND S=NEXT N=STOP",
+            "%s ENTER=SEND S=BACK N=STOP",
             detail == nullptr ? "Code: ______" : detail
         );
         drawStatus(state, pairingDetail, accentColor);
@@ -244,12 +244,7 @@ void RemoteScreen::showMetrics(
     }
     drawMetricLine("Battery: ", value, 107);
 
-    std::snprintf(
-        value,
-        sizeof(value),
-        "%lu s",
-        uptimeMs / 1000UL
-    );
+    std::snprintf(value, sizeof(value), "%lu s", uptimeMs / 1000UL);
     drawMetricLine("Uptime: ", value, 120);
 }
 
@@ -274,10 +269,10 @@ void RemoteScreen::drawLayout() {
     drawIndicators();
     display.drawFastHLine(0, 35, display.width(), GREEN);
 
-    drawHintRow("[T] TV [N] WIFI [S] NEXT", 42);
-    drawHintRow("[G] METRICS [P] POWER [H] HOME", 57);
-    drawHintRow("[I] INPUT [R/F] CH [U/J] VOL", 72);
-    drawHintRow("[WASD] MOVE [ENTER/O] OK [DEL/B] BACK", 87);
+    drawHintRow("[T] TV [N] WIFI [S] NEXT/BACK", 42);
+    drawHintRow("[ENTER] SELECT [G] METRICS", 57);
+    drawHintRow("[P] POWER [I] INPUT [H] HOME", 72);
+    drawHintRow("[R/F] CH [U/J] VOL [WASD] MOVE", 87);
 
     display.drawFastHLine(0, kStatusTop, display.width(), WHITE);
 }
