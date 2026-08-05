@@ -60,8 +60,8 @@ private:
 
     void startDiscovery();
     bool discoverTv();
-    bool attemptCurrentCandidate();
-    bool advanceCandidate(const char* reason);
+    bool connectSelectedCandidate();
+    bool returnToCandidateSelection(const char* reason);
     bool connectRemote();
     bool startPairing();
     void resetCandidates();
@@ -82,6 +82,7 @@ private:
     bool mdnsStarted_;
     bool preferencesOpened_;
     bool pairingKnown_;
+    bool candidateSelectionReady_;
     unsigned long lastDiscoveryAttemptMs_;
     unsigned long pairingAttemptStartedMs_;
     char pairingServiceName_[24];
