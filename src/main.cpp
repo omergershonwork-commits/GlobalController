@@ -102,6 +102,16 @@ bool pairingPhaseActive() {
            state == AndroidTvRemoteState::PairingCodeRequired;
 }
 
+bool candidateSelectionActive() {
+    if (!xiaomiSelected() || !wifiRemote.requested()) {
+        return false;
+    }
+
+    const CandidateUiStatus candidate = readCandidateStatus();
+    return wifiRemote.state() == AndroidTvRemoteState::TvDiscovering &&
+           candidate.count > 0;
+}
+
 bool candidateAttemptActive() {
     if (!xiaomiSelected() || !wifiRemote.requested()) {
         return false;
@@ -110,7 +120,8 @@ bool candidateAttemptActive() {
     const AndroidTvRemoteState state = wifiRemote.state();
     return state == AndroidTvRemoteState::RemoteConnecting ||
            state == AndroidTvRemoteState::PairingConnecting ||
-           state == AndroidTvRemoteState::PairingCodeRequired;
+           state == AndroidTvRemoteState::PairingCodeRequired ||
+           state == AndroidTvRemoteState::PairingSubmitting;
 }
 
 const char* verificationLabel(CodeVerification verification) {
@@ -132,7 +143,7 @@ const char* activityLabel() {
         case AndroidTvRemoteState::WifiConnecting:
             return "WIFI JOIN";
         case AndroidTvRemoteState::TvDiscovering:
-            return "TV SEARCH";
+            return readCandidateStatus().count > 0 ? "TV PICK" : "TV SEARCH";
         case AndroidTvRemoteState::RemoteConnecting:
             return "TV LINK";
         case AndroidTvRemoteState::PairingConnecting:
@@ -144,7 +155,7 @@ const char* activityLabel() {
         case AndroidTvRemoteState::Ready:
             return "WIFI READY";
         case AndroidTvRemoteState::Error:
-            return "NO TV MATCH";
+            return "WIFI ERROR";
     }
 
     return "UNKNOWN";
@@ -241,45 +252,9 @@ void renderMetrics(unsigned long now, bool force = false) {
     );
 }
 
-bool containsProfileSwitchKey(const Keyboard_Class::KeysState& state) {
+bool containsKey(const Keyboard_Class::KeysState& state, char lower, char upper) {
     for (const char character : state.word) {
-        if (character == 't' || character == 'T') {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool containsNetworkToggleKey(const Keyboard_Class::KeysState& state) {
-    for (const char character : state.word) {
-        if (character == 'n' || character == 'N') {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool containsMetricsToggleKey(const Keyboard_Class::KeysState& state) {
-    for (const char character : state.word) {
-        if (character == 'g' || character == 'G') {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool containsPairingEntryKey(const Keyboard_Class::KeysState& state) {
-    for (const char character : state.word) {
-        if (character == 'c' || character == 'C') {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool containsCandidateSkipKey(const Keyboard_Class::KeysState& state) {
-    for (const char character : state.word) {
-        if (character == 's' || character == 'S') {
+        if (character == lower || character == upper) {
             return true;
         }
     }
@@ -308,14 +283,10 @@ void showPairingCode() {
     remoteScreen.showMessage("PAIR CODE", detail.c_str(), YELLOW);
 }
 
-void showCandidateProgress(const char* phase, std::uint16_t color) {
+void showCandidateScreen(const char* phase, bool selecting, std::uint16_t color) {
     const CandidateUiStatus candidate = readCandidateStatus();
     if (candidate.count == 0 || candidate.number == 0) {
-        remoteScreen.showMessage(
-            phase,
-            "Finding Android TVs; N cancels",
-            color
-        );
+        remoteScreen.showMessage(phase, "Finding Android TVs; N stops", color);
         return;
     }
 
@@ -329,11 +300,11 @@ void showCandidateProgress(const char* phase, std::uint16_t color) {
         static_cast<unsigned int>(candidate.count)
     );
 
-    char detail[64];
+    char detail[72];
     std::snprintf(
         detail,
         sizeof(detail),
-        "%s %s  S=NEXT N=STOP",
+        selecting ? "%s %s S=NEXT ENTER=SELECT" : "%s %s S=BACK N=STOP",
         candidate.hostname[0] == '\0' ? "Android TV" : candidate.hostname,
         candidate.ipAddress
     );
@@ -351,22 +322,31 @@ void showWifiState(AndroidTvRemoteState state) {
                 remoteScreen.showMessage("WIFI SETUP", "Add local Wi-Fi credentials", YELLOW);
             }
             return;
+
         case AndroidTvRemoteState::WifiConnecting:
             pairingEntryActive = false;
-            remoteScreen.showMessage("WIFI CONNECT", "N cancels; G shows metrics", CYAN);
+            remoteScreen.showMessage("WIFI CONNECT", "N cancels; G metrics", CYAN);
             return;
+
         case AndroidTvRemoteState::TvDiscovering:
             pairingEntryActive = false;
-            remoteScreen.showMessage("TV SEARCH", "Discovering current IPs; N cancels", CYAN);
+            if (readCandidateStatus().count > 0) {
+                showCandidateScreen("TV PICK", true, CYAN);
+            } else {
+                remoteScreen.showMessage("TV SEARCH", "Discovering names and current IPs", CYAN);
+            }
             return;
+
         case AndroidTvRemoteState::RemoteConnecting:
             pairingEntryActive = false;
-            showCandidateProgress("TV LINK", CYAN);
+            showCandidateScreen("TV LINK", false, CYAN);
             return;
+
         case AndroidTvRemoteState::PairingConnecting:
             pairingEntryActive = false;
-            showCandidateProgress("PAIR TRY", YELLOW);
+            showCandidateScreen("PAIR TRY", false, YELLOW);
             return;
+
         case AndroidTvRemoteState::PairingCodeRequired:
             if (!pairingEntryActive) {
                 pairingCode = "";
@@ -374,28 +354,22 @@ void showWifiState(AndroidTvRemoteState state) {
             pairingEntryActive = true;
             showPairingCode();
             return;
+
         case AndroidTvRemoteState::PairingSubmitting:
             pairingEntryActive = false;
-            remoteScreen.showMessage("PAIRING", "Code submitted; N cancels", YELLOW);
+            remoteScreen.showMessage("PAIRING", "Code submitted; S back; N stop", YELLOW);
             return;
+
         case AndroidTvRemoteState::Ready:
             pairingEntryActive = false;
             pairingCode = "";
             remoteScreen.showMessage("WIFI READY", "N disconnects; G metrics", GREEN);
             return;
-        case AndroidTvRemoteState::Error: {
+
+        case AndroidTvRemoteState::Error:
             pairingEntryActive = false;
-            const CandidateUiStatus candidate = readCandidateStatus();
-            char detail[64];
-            std::snprintf(
-                detail,
-                sizeof(detail),
-                "Tried %u TVs; N stops/retries",
-                static_cast<unsigned int>(candidate.count)
-            );
-            remoteScreen.showMessage("NO TV MATCH", detail, RED);
+            remoteScreen.showMessage("WIFI ERROR", "N stops and retries", RED);
             return;
-        }
     }
 }
 
@@ -425,7 +399,7 @@ void toggleMetrics() {
 void openPairingEntryManually() {
     if (!pairingPhaseActive()) {
         if (!metricsVisible) {
-            remoteScreen.showMessage("PAIR CODE", "Available after TV pairing starts", YELLOW);
+            remoteScreen.showMessage("PAIR CODE", "Available after pairing starts", YELLOW);
         }
         Serial.println("Pairing-code shortcut ignored: pairing is not active");
         return;
@@ -438,12 +412,13 @@ void openPairingEntryManually() {
     Serial.println("Manual pairing-code entry opened with C");
 }
 
-void skipCurrentCandidate() {
-    if (!candidateAttemptActive()) {
+void moveToNextCandidate() {
+    const CandidateUiStatus candidate = readCandidateStatus();
+    if (candidate.count == 0 || (!candidateSelectionActive() && !candidateAttemptActive())) {
         if (!metricsVisible) {
-            remoteScreen.showMessage("TV NEXT", "Available while trying Android TVs", YELLOW);
+            remoteScreen.showMessage("TV NEXT", "Available after TV discovery", YELLOW);
         }
-        Serial.println("Candidate skip ignored: no candidate attempt is active");
+        Serial.println("Candidate navigation ignored: no selectable TV list");
         return;
     }
 
@@ -451,15 +426,44 @@ void skipCurrentCandidate() {
     pairingCode = "";
     if (!wifiRemote.skipCandidate()) {
         if (!metricsVisible) {
-            remoteScreen.showMessage("TV NEXT", "Unable to queue candidate skip", RED);
+            remoteScreen.showMessage("TV NEXT", "Unable to queue navigation", RED);
         }
         return;
     }
 
     if (!metricsVisible) {
-        remoteScreen.showMessage("TV NEXT", "Skipping after current TLS call", CYAN);
+        remoteScreen.showMessage("TV PICK", "Moving to next discovered TV", CYAN);
     }
-    Serial.println("Keyboard: Android TV candidate skip requested");
+    Serial.println("Keyboard: next Android TV candidate requested");
+}
+
+void selectCurrentCandidate() {
+    if (!candidateSelectionActive()) {
+        return;
+    }
+
+    const CandidateUiStatus candidate = readCandidateStatus();
+    if (!wifiRemote.requestPairing()) {
+        remoteScreen.showMessage("TV SELECT", "Unable to queue TV selection", RED);
+        return;
+    }
+
+    char detail[64];
+    std::snprintf(
+        detail,
+        sizeof(detail),
+        "%s %s",
+        candidate.hostname[0] == '\0' ? "Android TV" : candidate.hostname,
+        candidate.ipAddress
+    );
+    remoteScreen.showMessage("TV SELECTED", detail, CYAN);
+    Serial.printf(
+        "Keyboard: selected Android TV %u/%u host=%s ip=%s\n",
+        static_cast<unsigned int>(candidate.number),
+        static_cast<unsigned int>(candidate.count),
+        candidate.hostname,
+        candidate.ipAddress
+    );
 }
 
 void updateWifiStateUi() {
@@ -660,7 +664,7 @@ void handlePairingInput(const Keyboard_Class::KeysState& state) {
         }
 
         if (!wifiRemote.pairingCodeRequired()) {
-            remoteScreen.showMessage("PAIR WAIT", "TV handshake is not ready yet", YELLOW);
+            remoteScreen.showMessage("PAIR WAIT", "TV handshake is not ready", YELLOW);
             return;
         }
 
@@ -688,7 +692,7 @@ void handleKeyboard() {
     const bool pressed = M5Cardputer.Keyboard.isPressed();
     const auto& state = M5Cardputer.Keyboard.keysState();
 
-    if (pressed && containsNetworkToggleKey(state)) {
+    if (pressed && containsKey(state, 'n', 'N')) {
         if (inputChanged) {
             Serial.println("Keyboard: network toggle requested");
             toggleWifiRemote();
@@ -696,7 +700,7 @@ void handleKeyboard() {
         return;
     }
 
-    if (pressed && containsProfileSwitchKey(state)) {
+    if (pressed && containsKey(state, 't', 'T')) {
         if (inputChanged) {
             Serial.println("Keyboard: profile switch requested");
             selectNextProfile();
@@ -704,9 +708,20 @@ void handleKeyboard() {
         return;
     }
 
-    if (pressed && containsCandidateSkipKey(state) && candidateAttemptActive()) {
+    if (
+        pressed &&
+        containsKey(state, 's', 'S') &&
+        (candidateSelectionActive() || candidateAttemptActive())
+    ) {
         if (inputChanged) {
-            skipCurrentCandidate();
+            moveToNextCandidate();
+        }
+        return;
+    }
+
+    if (pressed && state.enter && candidateSelectionActive()) {
+        if (inputChanged) {
+            selectCurrentCandidate();
         }
         return;
     }
@@ -719,14 +734,14 @@ void handleKeyboard() {
         return;
     }
 
-    if (pressed && containsMetricsToggleKey(state)) {
+    if (pressed && containsKey(state, 'g', 'G')) {
         if (inputChanged) {
             toggleMetrics();
         }
         return;
     }
 
-    if (pressed && containsPairingEntryKey(state)) {
+    if (pressed && containsKey(state, 'c', 'C')) {
         if (inputChanged) {
             openPairingEntryManually();
         }
@@ -795,10 +810,10 @@ void setup() {
     sampleMetrics(millis(), true);
     refreshIndicators(millis(), true);
 
-    Serial.println("GlobalController TV-009 multi-candidate diagnostics build ready");
+    Serial.println("GlobalController TV-009 manual TV picker build ready");
     Serial.printf("Loaded profile: %s %s\n", activeProfile().brand(), activeProfile().model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
-    Serial.println("T selects TV; N starts/cancels Wi-Fi; S skips candidate; G metrics; C pairing code");
+    Serial.println("T TV; N Wi-Fi; S next/back; Enter selects TV; G metrics; C pairing code");
     Serial.printf(
         "Repeat timing: initial=%lu ms interval=%lu ms\n",
         static_cast<unsigned long>(kInitialRepeatDelayMs),
