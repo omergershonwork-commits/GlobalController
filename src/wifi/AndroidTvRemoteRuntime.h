@@ -23,6 +23,7 @@ public:
     bool configured() const;
     bool ready() const;
     bool pairingCodeRequired() const;
+    bool candidateIdentityKnown() const;
     bool requested() const;
     const char* stateLabel() const;
 
