@@ -37,6 +37,7 @@ public:
     bool configured() const;
     bool ready() const;
     bool pairingCodeRequired() const;
+    bool candidateIdentityKnown() const;
     const char* stateLabel() const;
 
     void candidateStatus(
@@ -56,10 +57,14 @@ private:
         IPAddress address;
         std::uint16_t remotePort;
         char hostname[33];
+        char friendlyName[49];
+        char macAddress[18];
+        bool identityKnown;
     };
 
     void startDiscovery();
     bool discoverTv();
+    bool identifySelectedCandidate();
     bool connectSelectedCandidate();
     bool returnToCandidateSelection(const char* reason);
     bool connectRemote();
@@ -92,5 +97,7 @@ private:
     volatile std::uint8_t candidateIndex_;
     volatile std::uint32_t candidateRevision_;
     char currentCandidateHostname_[33];
+    char currentCandidateDisplayName_[49];
+    char currentCandidateMac_[18];
     char currentCandidateIp_[16];
 };
