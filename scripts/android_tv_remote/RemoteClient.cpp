@@ -4,6 +4,10 @@
 #include <Arduino.h>
 #include <WiFiClient.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
 WiFiClient client;
 
 namespace {
@@ -13,6 +17,80 @@ constexpr unsigned long kTlsRetryDelayMs = 2;
 WOLFSSL_CTX* ctx = nullptr;
 WOLFSSL* ssl = nullptr;
 char wolfSslErrorMessage[81] = {};
+
+void copyText(char* destination, std::size_t capacity, const char* source) {
+    if (destination == nullptr || capacity == 0) {
+        return;
+    }
+
+    const char* safeSource = source == nullptr ? "" : source;
+    std::strncpy(destination, safeSource, capacity - 1);
+    destination[capacity - 1] = '\0';
+}
+
+bool looksLikeMacAddress(const char* value) {
+    if (value == nullptr || std::strlen(value) != 17) {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < 17; ++index) {
+        if ((index + 1) % 3 == 0) {
+            if (value[index] != ':') {
+                return false;
+            }
+            continue;
+        }
+
+        const char character = value[index];
+        const bool digit = character >= '0' && character <= '9';
+        const bool lowerHex = character >= 'a' && character <= 'f';
+        const bool upperHex = character >= 'A' && character <= 'F';
+        if (!digit && !lowerHex && !upperHex) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void parseCommonName(
+    const char* commonName,
+    char* deviceName,
+    std::size_t deviceNameCapacity,
+    char* macAddress,
+    std::size_t macAddressCapacity
+) {
+    copyText(deviceName, deviceNameCapacity, "Android TV");
+    copyText(macAddress, macAddressCapacity, "");
+
+    if (commonName == nullptr || commonName[0] == '\0') {
+        return;
+    }
+
+    char parts[160];
+    copyText(parts, sizeof(parts), commonName);
+
+    char* finalSeparator = std::strrchr(parts, '/');
+    if (finalSeparator == nullptr) {
+        copyText(deviceName, deviceNameCapacity, parts);
+        return;
+    }
+
+    const char* finalPart = finalSeparator + 1;
+    if (looksLikeMacAddress(finalPart)) {
+        copyText(macAddress, macAddressCapacity, finalPart);
+    }
+
+    *finalSeparator = '\0';
+    char* nameSeparator = std::strrchr(parts, '/');
+    const char* namePart = nameSeparator == nullptr ? parts : nameSeparator + 1;
+    if (
+        namePart[0] != '\0' &&
+        std::strcmp(namePart, "atvremote") != 0
+    ) {
+        copyText(deviceName, deviceNameCapacity, namePart);
+    }
+}
 
 int EthernetSend(WOLFSSL* sslObject, char* message, int size, void* context) {
     (void)sslObject;
@@ -93,9 +171,12 @@ int setup_wolfssl() {
         return -1;
     }
 
-    WOLFSSL_METHOD* method = wolfTLSv1_3_client_method();
+    // Android TV devices in the field do not all negotiate the same TLS
+    // version. Use wolfSSL's version-flexible client method rather than
+    // forcing TLS 1.3, matching modern Android TV Remote implementations.
+    WOLFSSL_METHOD* method = wolfSSLv23_client_method();
     if (method == nullptr) {
-        Serial.println("[TLS ERROR]: unable to create TLS 1.3 client method");
+        Serial.println("[TLS ERROR]: unable to create version-flexible TLS client method");
         return -1;
     }
 
@@ -215,9 +296,13 @@ int ssl_connect(IPAddress ip, std::uint16_t port) {
     for (;;) {
         const int result = wolfSSL_connect(ssl);
         if (result == WOLFSSL_SUCCESS) {
+            const char* version = wolfSSL_get_version(ssl);
+            const char* cipher = wolfSSL_get_cipher(ssl);
             Serial.printf(
-                "[TLS]: handshake complete in %lu ms free-heap=%u\n",
+                "[TLS]: handshake complete in %lu ms version=%s cipher=%s free-heap=%u\n",
                 millis() - handshakeStartedMs,
+                version == nullptr ? "unknown" : version,
+                cipher == nullptr ? "unknown" : cipher,
                 static_cast<unsigned int>(ESP.getFreeHeap())
             );
             return 1;
@@ -245,6 +330,71 @@ int ssl_connect(IPAddress ip, std::uint16_t port) {
 
         delay(kTlsRetryDelayMs);
     }
+}
+
+bool ssl_get_peer_identity(
+    char* deviceName,
+    std::size_t deviceNameCapacity,
+    char* macAddress,
+    std::size_t macAddressCapacity
+) {
+    copyText(deviceName, deviceNameCapacity, "Android TV");
+    copyText(macAddress, macAddressCapacity, "");
+
+    if (ssl == nullptr || !client.connected()) {
+        return false;
+    }
+
+    WOLFSSL_X509* certificate = wolfSSL_get_peer_certificate(ssl);
+    if (certificate == nullptr) {
+        Serial.println("[TLS ERROR]: Android TV did not provide a peer certificate");
+        return false;
+    }
+
+    WOLFSSL_X509_NAME* subject = wolfSSL_X509_get_subject_name(certificate);
+    char subjectText[256] = {};
+    if (subject != nullptr) {
+        wolfSSL_X509_NAME_oneline(subject, subjectText, sizeof(subjectText));
+    }
+
+    const char* commonName = wolfSSL_X509_get_subjectCN(certificate);
+    parseCommonName(
+        commonName,
+        deviceName,
+        deviceNameCapacity,
+        macAddress,
+        macAddressCapacity
+    );
+
+    Serial.printf(
+        "[TLS]: peer identity name=%s mac=%s subject=%s\n",
+        deviceName,
+        macAddress[0] == '\0' ? "unknown" : macAddress,
+        subjectText[0] == '\0' ? "unavailable" : subjectText
+    );
+    return true;
+}
+
+bool ssl_probe_identity(
+    IPAddress ip,
+    std::uint16_t port,
+    char* deviceName,
+    std::size_t deviceNameCapacity,
+    char* macAddress,
+    std::size_t macAddressCapacity
+) {
+    if (ssl_connect(ip, port) < 0) {
+        return false;
+    }
+
+    const bool identified = ssl_get_peer_identity(
+        deviceName,
+        deviceNameCapacity,
+        macAddress,
+        macAddressCapacity
+    );
+    ssl_stop();
+    return identified;
 }
 
 std::uint8_t ssl_send(const char* message, int messageSize) {
