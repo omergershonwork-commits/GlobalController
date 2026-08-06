@@ -2,23 +2,10 @@
 
 #include <ESPmDNS.h>
 
-#include <cstddef>
 #include <cstdio>
 #include <cstring>
 
 #include "remote/RemoteKeycode.h"
-
-// Added by GlobalController's checked RemoteClient transport. The probe opens
-// the Android TV pairing TLS port, reads the peer certificate identity, and
-// closes without sending a pairing request.
-extern bool ssl_probe_identity(
-    IPAddress ip,
-    std::uint16_t port,
-    char* deviceName,
-    std::size_t deviceNameCapacity,
-    char* macAddress,
-    std::size_t macAddressCapacity
-);
 
 namespace {
 constexpr std::uint16_t kDefaultRemotePort = 6466;
@@ -26,11 +13,13 @@ constexpr std::uint16_t kPairingPort = 6467;
 constexpr unsigned long kDiscoveryRetryMs = 5000;
 constexpr unsigned long kPairingResponseTimeoutMs = 15000;
 constexpr const char* kAndroidTvService = "androidtvremote2";
-constexpr const char* kAndroidTvProtocol = "tcp";
+constexpr const char* kGoogleCastService = "googlecast";
+constexpr const char* kMdnsProtocol = "tcp";
 constexpr const char* kPairingServiceName = "GlobalController";
 constexpr const char* kPreferencesNamespace = "globalctrl";
 constexpr const char* kPairingKnownKey = "xiaomiPair";
 constexpr const char* kPreferredHostKey = "xiaomiHost";
+constexpr const char* kPreferredDeviceIdKey = "xiaomiId";
 
 bool isEmpty(const char* value) {
     return value == nullptr || value[0] == '\0';
@@ -38,12 +27,6 @@ bool isEmpty(const char* value) {
 
 bool isValidAddress(const IPAddress& address) {
     return address != IPAddress(0, 0, 0, 0);
-}
-
-bool looksLikeXiaomi(const char* hostname) {
-    String normalized = hostname == nullptr ? "" : hostname;
-    normalized.toLowerCase();
-    return normalized.indexOf("xiaomi") >= 0 || normalized.indexOf("mitv") >= 0;
 }
 
 void copyText(char* destination, std::size_t capacity, const char* source) {
@@ -54,6 +37,24 @@ void copyText(char* destination, std::size_t capacity, const char* source) {
     const char* safeSource = source == nullptr ? "" : source;
     std::strncpy(destination, safeSource, capacity - 1);
     destination[capacity - 1] = '\0';
+}
+
+bool containsIgnoreCase(const char* value, const char* needle) {
+    String normalizedValue = value == nullptr ? "" : value;
+    String normalizedNeedle = needle == nullptr ? "" : needle;
+    normalizedValue.toLowerCase();
+    normalizedNeedle.toLowerCase();
+    return normalizedValue.indexOf(normalizedNeedle) >= 0;
+}
+
+String txtValue(int serviceIndex, const char* key) {
+    if (!MDNS.hasTxt(serviceIndex, key)) {
+        return "";
+    }
+
+    String value = MDNS.txt(serviceIndex, key);
+    value.trim();
+    return value;
 }
 }  // namespace
 
@@ -71,13 +72,14 @@ AndroidTvRemoteAdapter::AndroidTvRemoteAdapter()
       pairingAttemptStartedMs_(0),
       pairingServiceName_{},
       preferredHostname_{},
+      preferredDeviceId_{},
       candidates_{},
       candidateCount_(0),
       candidateIndex_(0),
       candidateRevision_(0),
       currentCandidateHostname_{},
       currentCandidateDisplayName_{},
-      currentCandidateMac_{},
+      currentCandidateDeviceId_{},
       currentCandidateIp_{} {
     copyText(pairingServiceName_, sizeof(pairingServiceName_), kPairingServiceName);
 }
@@ -96,22 +98,42 @@ void AndroidTvRemoteAdapter::begin(const char* ssid, const char* password) {
         }
     }
 
-    pairingKnown_ = preferencesOpened_ && preferences_.getBool(kPairingKnownKey, false);
+    pairingKnown_ = preferencesOpened_ &&
+                    preferences_.getBool(kPairingKnownKey, false);
+
     if (preferencesOpened_) {
-        const String preferredHost = preferences_.getString(kPreferredHostKey, "");
-        copyText(preferredHostname_, sizeof(preferredHostname_), preferredHost.c_str());
+        const String preferredHost =
+            preferences_.getString(kPreferredHostKey, "");
+        const String preferredDeviceId =
+            preferences_.getString(kPreferredDeviceIdKey, "");
+        copyText(
+            preferredHostname_,
+            sizeof(preferredHostname_),
+            preferredHost.c_str()
+        );
+        copyText(
+            preferredDeviceId_,
+            sizeof(preferredDeviceId_),
+            preferredDeviceId.c_str()
+        );
     } else {
         preferredHostname_[0] = '\0';
+        preferredDeviceId_[0] = '\0';
     }
 
-    if (pairingKnown_ && preferredHostname_[0] == '\0') {
+    if (
+        pairingKnown_ &&
+        preferredHostname_[0] == '\0' &&
+        preferredDeviceId_[0] == '\0'
+    ) {
         pairingKnown_ = false;
     }
 
     Serial.printf(
-        "Stored Xiaomi pairing state: %s preferred-host=%s\n",
+        "Stored Xiaomi pairing state: %s preferred-host=%s preferred-id=%s\n",
         pairingKnown_ ? "paired" : "not paired",
-        preferredHostname_[0] == '\0' ? "none" : preferredHostname_
+        preferredHostname_[0] == '\0' ? "none" : preferredHostname_,
+        preferredDeviceId_[0] == '\0' ? "none" : preferredDeviceId_
     );
 
     if (!configured_) {
@@ -159,10 +181,10 @@ bool AndroidTvRemoteAdapter::requestPairing() {
         return false;
     }
 
-    if (state_ == AndroidTvRemoteState::TvDiscovering && candidateSelectionReady_) {
-        if (!candidateIdentityKnown()) {
-            return identifySelectedCandidate();
-        }
+    if (
+        state_ == AndroidTvRemoteState::TvDiscovering &&
+        candidateSelectionReady_
+    ) {
         return connectSelectedCandidate();
     }
 
@@ -185,7 +207,9 @@ bool AndroidTvRemoteAdapter::requestPairing() {
 
 bool AndroidTvRemoteAdapter::skipCurrentCandidate() {
     if (candidateCount_ == 0) {
-        Serial.println("Candidate navigation ignored: no Android TVs are available");
+        Serial.println(
+            "Candidate navigation ignored: no Android TVs are available"
+        );
         return false;
     }
 
@@ -194,17 +218,22 @@ bool AndroidTvRemoteAdapter::skipCurrentCandidate() {
     pairingCodeSubmitted_ = false;
     pairingAttemptStartedMs_ = 0;
 
-    candidateIndex_ = static_cast<std::uint8_t>((candidateIndex_ + 1) % candidateCount_);
+    candidateIndex_ = static_cast<std::uint8_t>(
+        (candidateIndex_ + 1) % candidateCount_
+    );
     candidateSelectionReady_ = true;
     state_ = AndroidTvRemoteState::TvDiscovering;
     publishCurrentCandidate();
 
     Serial.printf(
-        "Cardputer selected candidate %u/%u: mdns=%s display=%s ip=%s\n",
+        "Cardputer selected candidate %u/%u: name=%s mdns=%s id=%s ip=%s\n",
         static_cast<unsigned int>(candidateIndex_ + 1),
         static_cast<unsigned int>(candidateCount_),
-        currentCandidateHostname_,
         currentCandidateDisplayName_,
+        currentCandidateHostname_,
+        currentCandidateDeviceId_[0] == '\0'
+            ? "unknown"
+            : currentCandidateDeviceId_,
         currentCandidateIp_
     );
     return true;
@@ -218,7 +247,10 @@ void AndroidTvRemoteAdapter::loop() {
 
         case AndroidTvRemoteState::WifiConnecting:
             if (WiFi.status() == WL_CONNECTED) {
-                Serial.printf("Wi-Fi connected: %s\n", WiFi.localIP().toString().c_str());
+                Serial.printf(
+                    "Wi-Fi connected: %s\n",
+                    WiFi.localIP().toString().c_str()
+                );
                 startDiscovery();
             }
             return;
@@ -261,10 +293,14 @@ void AndroidTvRemoteAdapter::loop() {
 
             if (remoteManager_.error_auth) {
                 remoteManager_.error_auth = false;
-                Serial.println("Remote authentication failed; starting pairing service");
+                Serial.println(
+                    "Remote authentication failed; starting pairing service"
+                );
                 setPairingKnown(false);
                 if (!startPairing()) {
-                    returnToCandidateSelection("Remote authentication and pairing failed");
+                    returnToCandidateSelection(
+                        "Remote authentication and pairing failed"
+                    );
                 }
                 return;
             }
@@ -297,19 +333,27 @@ void AndroidTvRemoteAdapter::loop() {
 
             if (state_ == AndroidTvRemoteState::PairingConnecting) {
                 if (!pairingManager_.connected()) {
-                    returnToCandidateSelection("Pairing connection closed before code stage");
+                    returnToCandidateSelection(
+                        "Pairing connection closed before code stage"
+                    );
                     return;
                 }
 
-                if (millis() - pairingAttemptStartedMs_ >= kPairingResponseTimeoutMs) {
+                if (
+                    millis() - pairingAttemptStartedMs_ >=
+                    kPairingResponseTimeoutMs
+                ) {
                     returnToCandidateSelection("Pairing response timed out");
                     return;
                 }
             }
 
-            if (pairingCodeSubmitted_ && !pairingManager_.connected()) {
+            if (
+                pairingCodeSubmitted_ &&
+                !pairingManager_.connected()
+            ) {
                 pairingCodeSubmitted_ = false;
-                setPreferredHostname(currentCandidateHostname_);
+                savePreferredIdentity();
                 setPairingKnown(true);
                 if (!connectRemote()) {
                     returnToCandidateSelection(
@@ -331,7 +375,9 @@ bool AndroidTvRemoteAdapter::submitPairingCode(const String& code) {
     normalized.toUpperCase();
 
     if (normalized.length() != 6) {
-        Serial.println("Android TV pairing code must contain 6 hexadecimal characters");
+        Serial.println(
+            "Android TV pairing code must contain 6 hexadecimal characters"
+        );
         return false;
     }
 
@@ -340,13 +386,17 @@ bool AndroidTvRemoteAdapter::submitPairingCode(const String& code) {
         const bool isDigit = character >= '0' && character <= '9';
         const bool isHexLetter = character >= 'A' && character <= 'F';
         if (!isDigit && !isHexLetter) {
-            Serial.println("Android TV pairing code contains a non-hexadecimal character");
+            Serial.println(
+                "Android TV pairing code contains a non-hexadecimal character"
+            );
             return false;
         }
     }
 
     if (!pairingManager_.sendCode(normalized)) {
-        Serial.println("Android TV pairing code was rejected before submission");
+        Serial.println(
+            "Android TV pairing code was rejected before submission"
+        );
         return false;
     }
 
@@ -365,7 +415,10 @@ bool AndroidTvRemoteAdapter::send(TvCommand command) {
         return false;
     }
 
-    return remoteManager_.sendKey(keyCode, REMOTE__REMOTE_DIRECTION__SHORT);
+    return remoteManager_.sendKey(
+        keyCode,
+        REMOTE__REMOTE_DIRECTION__SHORT
+    );
 }
 
 AndroidTvRemoteState AndroidTvRemoteAdapter::state() const {
@@ -397,11 +450,11 @@ const char* AndroidTvRemoteAdapter::stateLabel() const {
         case AndroidTvRemoteState::WifiConnecting:
             return "Connecting Wi-Fi";
         case AndroidTvRemoteState::TvDiscovering:
-            return candidateSelectionReady_ ? "Select Android TV" : "Discovering Android TV";
+            return candidateSelectionReady_
+                ? "Select Android TV"
+                : "Discovering Android TV names";
         case AndroidTvRemoteState::RemoteConnecting:
-            return candidateIdentityKnown()
-                ? "Connecting selected TV"
-                : "Reading selected TV identity";
+            return "Connecting selected TV";
         case AndroidTvRemoteState::PairingConnecting:
             return "Pairing selected TV";
         case AndroidTvRemoteState::PairingCodeRequired:
@@ -431,12 +484,22 @@ void AndroidTvRemoteAdapter::candidateStatus(
         const std::uint8_t count = candidateCount_;
         const std::uint8_t index = candidateIndex_;
 
-        copyText(hostname, hostnameCapacity, currentCandidateDisplayName_);
-        copyText(ipAddress, ipAddressCapacity, currentCandidateIp_);
+        copyText(
+            hostname,
+            hostnameCapacity,
+            currentCandidateDisplayName_
+        );
+        copyText(
+            ipAddress,
+            ipAddressCapacity,
+            currentCandidateIp_
+        );
 
         const std::uint32_t revisionAfter = candidateRevision_;
         if (revisionBefore == revisionAfter) {
-            candidateNumber = count == 0 ? 0 : static_cast<std::uint8_t>(index + 1);
+            candidateNumber = count == 0
+                ? 0
+                : static_cast<std::uint8_t>(index + 1);
             candidateCount = count;
             revision = revisionAfter;
             return;
@@ -465,7 +528,9 @@ void AndroidTvRemoteAdapter::startDiscovery() {
 
         if (!MDNS.begin(hostname)) {
             state_ = AndroidTvRemoteState::Error;
-            Serial.println("Failed to start mDNS for Android TV discovery");
+            Serial.println(
+                "Failed to start mDNS for Android TV discovery"
+            );
             return;
         }
 
@@ -483,21 +548,30 @@ bool AndroidTvRemoteAdapter::discoverTv() {
     lastDiscoveryAttemptMs_ = millis();
     resetCandidates();
 
+    Candidate discovered[kMaxCandidates]{};
+    std::uint8_t discoveredCount = 0;
+
     Serial.printf(
         "Searching for _%s._%s.local\n",
         kAndroidTvService,
-        kAndroidTvProtocol
+        kMdnsProtocol
     );
 
-    const int serviceCount = MDNS.queryService(kAndroidTvService, kAndroidTvProtocol);
+    const int serviceCount = MDNS.queryService(
+        kAndroidTvService,
+        kMdnsProtocol
+    );
     if (serviceCount <= 0) {
-        Serial.println("No Android TV Remote v2 service found; retrying");
+        Serial.println(
+            "No Android TV Remote v2 service found; retrying"
+        );
         return false;
     }
 
     for (
         int serviceIndex = 0;
-        serviceIndex < serviceCount && candidateCount_ < kMaxCandidates;
+        serviceIndex < serviceCount &&
+        discoveredCount < kMaxCandidates;
         ++serviceIndex
     ) {
         const IPAddress address = MDNS.IP(serviceIndex);
@@ -506,8 +580,12 @@ bool AndroidTvRemoteAdapter::discoverTv() {
         }
 
         bool duplicate = false;
-        for (std::uint8_t index = 0; index < candidateCount_; ++index) {
-            if (candidates_[index].address == address) {
+        for (
+            std::uint8_t index = 0;
+            index < discoveredCount;
+            ++index
+        ) {
+            if (discovered[index].address == address) {
                 duplicate = true;
                 break;
             }
@@ -516,7 +594,7 @@ bool AndroidTvRemoteAdapter::discoverTv() {
             continue;
         }
 
-        Candidate& candidate = candidates_[candidateCount_];
+        Candidate& candidate = discovered[discoveredCount];
         candidate.address = address;
         candidate.remotePort = MDNS.port(serviceIndex);
         if (candidate.remotePort == 0) {
@@ -524,26 +602,138 @@ bool AndroidTvRemoteAdapter::discoverTv() {
         }
 
         const String hostname = MDNS.hostname(serviceIndex);
-        copyText(candidate.hostname, sizeof(candidate.hostname), hostname.c_str());
-        candidate.friendlyName[0] = '\0';
-        candidate.macAddress[0] = '\0';
+        copyText(
+            candidate.hostname,
+            sizeof(candidate.hostname),
+            hostname.c_str()
+        );
+        copyText(
+            candidate.friendlyName,
+            sizeof(candidate.friendlyName),
+            candidate.hostname[0] == '\0'
+                ? "Android TV"
+                : candidate.hostname
+        );
+        candidate.modelName[0] = '\0';
+        candidate.deviceId[0] = '\0';
         candidate.identityKnown = false;
 
         Serial.printf(
-            "Discovered Android TV candidate %u: host=%s ip=%s port=%u\n",
-            static_cast<unsigned int>(candidateCount_ + 1),
+            "Discovered remote candidate %u: mdns=%s ip=%s port=%u\n",
+            static_cast<unsigned int>(discoveredCount + 1),
             candidate.hostname,
             candidate.address.toString().c_str(),
             candidate.remotePort
         );
 
-        candidateCount_ = static_cast<std::uint8_t>(candidateCount_ + 1);
+        discoveredCount = static_cast<std::uint8_t>(
+            discoveredCount + 1
+        );
     }
 
-    if (candidateCount_ == 0) {
-        Serial.println("Android TV services had no usable unique IPv4 address; retrying");
+    if (discoveredCount == 0) {
+        Serial.println(
+            "Android TV services had no usable unique IPv4 address; retrying"
+        );
         return false;
     }
+
+    Serial.printf(
+        "Searching for _%s._%s.local to obtain user-visible TV names\n",
+        kGoogleCastService,
+        kMdnsProtocol
+    );
+
+    const int castCount = MDNS.queryService(
+        kGoogleCastService,
+        kMdnsProtocol
+    );
+
+    for (int castIndex = 0; castIndex < castCount; ++castIndex) {
+        const IPAddress castAddress = MDNS.IP(castIndex);
+        if (!isValidAddress(castAddress)) {
+            continue;
+        }
+
+        const String friendlyName = txtValue(castIndex, "fn");
+        const String modelName = txtValue(castIndex, "md");
+        const String deviceId = txtValue(castIndex, "id");
+
+        Serial.printf(
+            "Discovered Cast identity: name=%s model=%s id=%s ip=%s\n",
+            friendlyName.isEmpty()
+                ? "unknown"
+                : friendlyName.c_str(),
+            modelName.isEmpty()
+                ? "unknown"
+                : modelName.c_str(),
+            deviceId.isEmpty()
+                ? "unknown"
+                : deviceId.c_str(),
+            castAddress.toString().c_str()
+        );
+
+        for (
+            std::uint8_t candidateIndex = 0;
+            candidateIndex < discoveredCount;
+            ++candidateIndex
+        ) {
+            Candidate& candidate = discovered[candidateIndex];
+            if (candidate.address != castAddress) {
+                continue;
+            }
+
+            if (!friendlyName.isEmpty()) {
+                copyText(
+                    candidate.friendlyName,
+                    sizeof(candidate.friendlyName),
+                    friendlyName.c_str()
+                );
+            } else if (!modelName.isEmpty()) {
+                copyText(
+                    candidate.friendlyName,
+                    sizeof(candidate.friendlyName),
+                    modelName.c_str()
+                );
+            }
+
+            copyText(
+                candidate.modelName,
+                sizeof(candidate.modelName),
+                modelName.c_str()
+            );
+            copyText(
+                candidate.deviceId,
+                sizeof(candidate.deviceId),
+                deviceId.c_str()
+            );
+            candidate.identityKnown =
+                !friendlyName.isEmpty() ||
+                !modelName.isEmpty() ||
+                !deviceId.isEmpty();
+
+            Serial.printf(
+                "Matched Android TV service to Cast device: "
+                "name=%s model=%s mdns=%s ip=%s\n",
+                candidate.friendlyName,
+                candidate.modelName[0] == '\0'
+                    ? "unknown"
+                    : candidate.modelName,
+                candidate.hostname,
+                candidate.address.toString().c_str()
+            );
+            break;
+        }
+    }
+
+    for (
+        std::uint8_t index = 0;
+        index < discoveredCount;
+        ++index
+    ) {
+        candidates_[index] = discovered[index];
+    }
+    candidateCount_ = discoveredCount;
 
     sortCandidates();
     candidateIndex_ = 0;
@@ -552,99 +742,49 @@ bool AndroidTvRemoteAdapter::discoverTv() {
     state_ = AndroidTvRemoteState::TvDiscovering;
 
     Serial.printf(
-        "Waiting for Cardputer selection: %u Android TV candidates found\n",
+        "TV picker ready: %u Android TV candidates found\n",
         static_cast<unsigned int>(candidateCount_)
     );
     return true;
 }
 
-bool AndroidTvRemoteAdapter::identifySelectedCandidate() {
-    if (!candidateSelectionReady_ || candidateIndex_ >= candidateCount_) {
-        Serial.println("No Android TV candidate is selected for identity lookup");
-        return false;
-    }
-
-    candidateSelectionReady_ = false;
-    publishCurrentCandidate();
-    state_ = AndroidTvRemoteState::RemoteConnecting;
-
-    Serial.printf(
-        "Reading certificate identity for candidate %u/%u: mdns=%s ip=%s\n",
-        static_cast<unsigned int>(candidateIndex_ + 1),
-        static_cast<unsigned int>(candidateCount_),
-        currentCandidateHostname_,
-        currentCandidateIp_
-    );
-
-    Candidate& candidate = candidates_[candidateIndex_];
-    char friendlyName[sizeof(candidate.friendlyName)] = {};
-    char macAddress[sizeof(candidate.macAddress)] = {};
-    if (!ssl_probe_identity(
-            candidate.address,
-            kPairingPort,
-            friendlyName,
-            sizeof(friendlyName),
-            macAddress,
-            sizeof(macAddress)
-        )) {
-        return returnToCandidateSelection(
-            "Selected TV identity TLS probe failed; choose another device or retry"
-        );
-    }
-
-    copyText(candidate.friendlyName, sizeof(candidate.friendlyName), friendlyName);
-    copyText(candidate.macAddress, sizeof(candidate.macAddress), macAddress);
-    candidate.identityKnown = true;
-    candidateSelectionReady_ = true;
-    state_ = AndroidTvRemoteState::TvDiscovering;
-    publishCurrentCandidate();
-
-    Serial.printf(
-        "Identified candidate %u/%u: name=%s mac=%s mdns=%s ip=%s\n",
-        static_cast<unsigned int>(candidateIndex_ + 1),
-        static_cast<unsigned int>(candidateCount_),
-        candidate.friendlyName,
-        candidate.macAddress[0] == '\0' ? "unknown" : candidate.macAddress,
-        candidate.hostname,
-        currentCandidateIp_
-    );
-    return true;
-}
-
 bool AndroidTvRemoteAdapter::connectSelectedCandidate() {
-    if (!candidateSelectionReady_ || candidateIndex_ >= candidateCount_) {
+    if (
+        !candidateSelectionReady_ ||
+        candidateIndex_ >= candidateCount_
+    ) {
         Serial.println("No Android TV candidate is selected");
         return false;
     }
-    if (!candidateIdentityKnown()) {
-        Serial.println("Selected Android TV must be identified before pairing");
-        return false;
-    }
 
     candidateSelectionReady_ = false;
     publishCurrentCandidate();
 
     Serial.printf(
-        "Cardputer confirmed candidate %u/%u: name=%s mdns=%s ip=%s\n",
+        "Cardputer confirmed candidate %u/%u: "
+        "name=%s mdns=%s id=%s ip=%s\n",
         static_cast<unsigned int>(candidateIndex_ + 1),
         static_cast<unsigned int>(candidateCount_),
         currentCandidateDisplayName_,
         currentCandidateHostname_,
+        currentCandidateDeviceId_[0] == '\0'
+            ? "unknown"
+            : currentCandidateDeviceId_,
         currentCandidateIp_
     );
 
-    const bool savedCandidate =
-        pairingKnown_ &&
-        preferredHostname_[0] != '\0' &&
-        std::strcmp(currentCandidateHostname_, preferredHostname_) == 0;
-
-    if (savedCandidate) {
-        Serial.println("Trying saved Android TV identity at its newly discovered IP");
+    const Candidate& selected = candidates_[candidateIndex_];
+    if (pairingKnown_ && candidateMatchesPreferred(selected)) {
+        Serial.println(
+            "Trying saved Android TV identity at its newly discovered IP"
+        );
         if (connectRemote()) {
             return true;
         }
 
-        Serial.println("Saved remote connection failed; retrying selected TV through pairing");
+        Serial.println(
+            "Saved remote connection failed; retrying selected TV through pairing"
+        );
         setPairingKnown(false);
     }
 
@@ -652,13 +792,19 @@ bool AndroidTvRemoteAdapter::connectSelectedCandidate() {
         return true;
     }
 
-    return returnToCandidateSelection("Selected TV failed before pairing-code stage");
+    return returnToCandidateSelection(
+        "Selected TV failed before pairing-code stage"
+    );
 }
 
-bool AndroidTvRemoteAdapter::returnToCandidateSelection(const char* reason) {
+bool AndroidTvRemoteAdapter::returnToCandidateSelection(
+    const char* reason
+) {
     Serial.printf(
         "%s: name=%s mdns=%s ip=%s\n",
-        reason == nullptr ? "Returning to TV picker" : reason,
+        reason == nullptr
+            ? "Returning to TV picker"
+            : reason,
         currentCandidateDisplayName_,
         currentCandidateHostname_,
         currentCandidateIp_
@@ -687,7 +833,10 @@ bool AndroidTvRemoteAdapter::connectRemote() {
     remoteManager_.error_auth = false;
     remoteManager_.start(tvIp_, remotePort_);
 
-    if (remoteManager_.error_auth || !remoteManager_.connected()) {
+    if (
+        remoteManager_.error_auth ||
+        !remoteManager_.connected()
+    ) {
         remoteManager_.error_auth = false;
         Serial.printf(
             "Android TV remote connection failed for name=%s ip=%s\n",
@@ -699,7 +848,8 @@ bool AndroidTvRemoteAdapter::connectRemote() {
 
     state_ = AndroidTvRemoteState::Ready;
     Serial.printf(
-        "Android TV remote connected to name=%s mdns=%s ip=%s port=%u\n",
+        "Android TV remote connected to "
+        "name=%s mdns=%s ip=%s port=%u\n",
         currentCandidateDisplayName_,
         currentCandidateHostname_,
         currentCandidateIp_,
@@ -714,11 +864,16 @@ bool AndroidTvRemoteAdapter::startPairing() {
     pairingCodeSubmitted_ = false;
     pairingManager_.isSecure = false;
     pairingAttemptStartedMs_ = millis();
-    pairingManager_.begin(tvIp_, kPairingPort, pairingServiceName_);
+    pairingManager_.begin(
+        tvIp_,
+        kPairingPort,
+        pairingServiceName_
+    );
 
     if (!pairingManager_.connected()) {
         Serial.printf(
-            "Unable to pair selected name=%s mdns=%s ip=%s on port %u\n",
+            "Unable to pair selected "
+            "name=%s mdns=%s ip=%s on port %u\n",
             currentCandidateDisplayName_,
             currentCandidateHostname_,
             currentCandidateIp_,
@@ -728,7 +883,8 @@ bool AndroidTvRemoteAdapter::startPairing() {
     }
 
     Serial.printf(
-        "Pairing transport connected for name=%s ip=%s; waiting for TV response\n",
+        "Pairing transport connected for name=%s ip=%s; "
+        "waiting for TV response\n",
         currentCandidateDisplayName_,
         currentCandidateIp_
     );
@@ -741,7 +897,7 @@ void AndroidTvRemoteAdapter::resetCandidates() {
     candidateSelectionReady_ = false;
     currentCandidateHostname_[0] = '\0';
     currentCandidateDisplayName_[0] = '\0';
-    currentCandidateMac_[0] = '\0';
+    currentCandidateDeviceId_[0] = '\0';
     currentCandidateIp_[0] = '\0';
     candidateRevision_ = candidateRevision_ + 1;
 }
@@ -754,15 +910,25 @@ void AndroidTvRemoteAdapter::publishCurrentCandidate() {
     const Candidate& candidate = candidates_[candidateIndex_];
     tvIp_ = candidate.address;
     remotePort_ = candidate.remotePort;
-    copyText(currentCandidateHostname_, sizeof(currentCandidateHostname_), candidate.hostname);
+
+    copyText(
+        currentCandidateHostname_,
+        sizeof(currentCandidateHostname_),
+        candidate.hostname
+    );
     copyText(
         currentCandidateDisplayName_,
         sizeof(currentCandidateDisplayName_),
-        candidate.identityKnown && candidate.friendlyName[0] != '\0'
-            ? candidate.friendlyName
-            : candidate.hostname
+        candidate.friendlyName[0] == '\0'
+            ? candidate.hostname
+            : candidate.friendlyName
     );
-    copyText(currentCandidateMac_, sizeof(currentCandidateMac_), candidate.macAddress);
+    copyText(
+        currentCandidateDeviceId_,
+        sizeof(currentCandidateDeviceId_),
+        candidate.deviceId
+    );
+
     std::snprintf(
         currentCandidateIp_,
         sizeof(currentCandidateIp_),
@@ -772,27 +938,46 @@ void AndroidTvRemoteAdapter::publishCurrentCandidate() {
         candidate.address[2],
         candidate.address[3]
     );
+
     candidateRevision_ = candidateRevision_ + 1;
 }
 
 void AndroidTvRemoteAdapter::sortCandidates() {
     auto rank = [this](const Candidate& candidate) -> std::uint8_t {
-        if (
-            preferredHostname_[0] != '\0' &&
-            std::strcmp(candidate.hostname, preferredHostname_) == 0
-        ) {
+        if (candidateMatchesPreferred(candidate)) {
             return 0;
         }
-        return looksLikeXiaomi(candidate.hostname) ? 1 : 2;
+
+        if (
+            containsIgnoreCase(candidate.friendlyName, "xiaomi") ||
+            containsIgnoreCase(candidate.friendlyName, "mi tv") ||
+            containsIgnoreCase(candidate.friendlyName, "mitv") ||
+            containsIgnoreCase(candidate.modelName, "xiaomi") ||
+            containsIgnoreCase(candidate.modelName, "mitv") ||
+            containsIgnoreCase(candidate.hostname, "xiaomi") ||
+            containsIgnoreCase(candidate.hostname, "mitv")
+        ) {
+            return 1;
+        }
+
+        return candidate.identityKnown ? 2 : 3;
     };
 
-    for (std::uint8_t left = 0; left < candidateCount_; ++left) {
+    for (
+        std::uint8_t left = 0;
+        left < candidateCount_;
+        ++left
+    ) {
         for (
-            std::uint8_t right = static_cast<std::uint8_t>(left + 1);
+            std::uint8_t right =
+                static_cast<std::uint8_t>(left + 1);
             right < candidateCount_;
             ++right
         ) {
-            if (rank(candidates_[right]) < rank(candidates_[left])) {
+            if (
+                rank(candidates_[right]) <
+                rank(candidates_[left])
+            ) {
                 const Candidate temporary = candidates_[left];
                 candidates_[left] = candidates_[right];
                 candidates_[right] = temporary;
@@ -800,14 +985,29 @@ void AndroidTvRemoteAdapter::sortCandidates() {
         }
     }
 
-    Serial.println("Android TV candidate order:");
-    for (std::uint8_t index = 0; index < candidateCount_; ++index) {
+    Serial.println("Android TV picker order:");
+    for (
+        std::uint8_t index = 0;
+        index < candidateCount_;
+        ++index
+    ) {
         Serial.printf(
-            "  %u/%u host=%s ip=%s priority=%u\n",
+            "  %u/%u name=%s model=%s mdns=%s id=%s ip=%s "
+            "identity=%s priority=%u\n",
             static_cast<unsigned int>(index + 1),
             static_cast<unsigned int>(candidateCount_),
+            candidates_[index].friendlyName,
+            candidates_[index].modelName[0] == '\0'
+                ? "unknown"
+                : candidates_[index].modelName,
             candidates_[index].hostname,
+            candidates_[index].deviceId[0] == '\0'
+                ? "unknown"
+                : candidates_[index].deviceId,
             candidates_[index].address.toString().c_str(),
+            candidates_[index].identityKnown
+                ? "cast"
+                : "mdns-only",
             static_cast<unsigned int>(rank(candidates_[index]))
         );
     }
@@ -825,17 +1025,61 @@ void AndroidTvRemoteAdapter::setPairingKnown(bool known) {
     );
 }
 
-void AndroidTvRemoteAdapter::setPreferredHostname(const char* hostname) {
-    copyText(preferredHostname_, sizeof(preferredHostname_), hostname);
+void AndroidTvRemoteAdapter::savePreferredIdentity() {
+    copyText(
+        preferredHostname_,
+        sizeof(preferredHostname_),
+        currentCandidateHostname_
+    );
+    copyText(
+        preferredDeviceId_,
+        sizeof(preferredDeviceId_),
+        currentCandidateDeviceId_
+    );
 
     if (preferencesOpened_) {
-        preferences_.putString(kPreferredHostKey, preferredHostname_);
+        preferences_.putString(
+            kPreferredHostKey,
+            preferredHostname_
+        );
+        preferences_.putString(
+            kPreferredDeviceIdKey,
+            preferredDeviceId_
+        );
     }
 
     Serial.printf(
-        "Saved Android TV identity: host=%s; IP will continue to be rediscovered\n",
-        preferredHostname_[0] == '\0' ? "none" : preferredHostname_
+        "Saved Android TV identity: "
+        "name=%s host=%s id=%s; IP will be rediscovered\n",
+        currentCandidateDisplayName_,
+        preferredHostname_[0] == '\0'
+            ? "none"
+            : preferredHostname_,
+        preferredDeviceId_[0] == '\0'
+            ? "none"
+            : preferredDeviceId_
     );
+}
+
+bool AndroidTvRemoteAdapter::candidateMatchesPreferred(
+    const Candidate& candidate
+) const {
+    if (
+        preferredDeviceId_[0] != '\0' &&
+        candidate.deviceId[0] != '\0'
+    ) {
+        return std::strcmp(
+            candidate.deviceId,
+            preferredDeviceId_
+        ) == 0;
+    }
+
+    return preferredHostname_[0] != '\0' &&
+           candidate.hostname[0] != '\0' &&
+           std::strcmp(
+               candidate.hostname,
+               preferredHostname_
+           ) == 0;
 }
 
 bool AndroidTvRemoteAdapter::toRemoteKey(
