@@ -58,13 +58,13 @@ private:
         std::uint16_t remotePort;
         char hostname[33];
         char friendlyName[49];
-        char macAddress[18];
+        char modelName[33];
+        char deviceId[41];
         bool identityKnown;
     };
 
     void startDiscovery();
     bool discoverTv();
-    bool identifySelectedCandidate();
     bool connectSelectedCandidate();
     bool returnToCandidateSelection(const char* reason);
     bool connectRemote();
@@ -73,7 +73,8 @@ private:
     void publishCurrentCandidate();
     void sortCandidates();
     void setPairingKnown(bool known);
-    void setPreferredHostname(const char* hostname);
+    void savePreferredIdentity();
+    bool candidateMatchesPreferred(const Candidate& candidate) const;
     static bool toRemoteKey(TvCommand command, Remote__RemoteKeyCode& keyCode);
 
     RemoteManager remoteManager_;
@@ -92,12 +93,13 @@ private:
     unsigned long pairingAttemptStartedMs_;
     char pairingServiceName_[24];
     char preferredHostname_[33];
+    char preferredDeviceId_[41];
     Candidate candidates_[kMaxCandidates];
     volatile std::uint8_t candidateCount_;
     volatile std::uint8_t candidateIndex_;
     volatile std::uint32_t candidateRevision_;
     char currentCandidateHostname_[33];
     char currentCandidateDisplayName_[49];
-    char currentCandidateMac_[18];
+    char currentCandidateDeviceId_[41];
     char currentCandidateIp_[16];
 };
