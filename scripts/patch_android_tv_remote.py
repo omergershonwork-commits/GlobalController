@@ -28,21 +28,10 @@ _REMOTE_CLIENT_PATH = Path("src/RemoteClient.cpp")
 _REMOTE_MANAGER_PATH = Path("src/remote/RemoteManager.cpp")
 _REMOTE_MESSAGE_MANAGER_PATH = Path("src/remote/RemoteMessageManager.cpp")
 _PAIRING_MANAGER_PATH = Path("src/pairing/PairingManager.cpp")
-_PAIRING_MESSAGE_MANAGER_PATH = Path("src/pairing/PairingMessageManager.cpp")
 _WOLFSSL_HEADER_PATH = Path("src/wolfssl.h")
 _SAFE_REMOTE_CLIENT_SOURCE = Path("scripts/android_tv_remote/RemoteClient.cpp")
+_SAFE_PAIRING_MANAGER_SOURCE = Path("scripts/android_tv_remote/PairingManager.cpp")
 
-_PAIRING_UNPACK_STATEMENT = (
-    "        Pairing__PairingMessage *response = "
-    "pairing__pairing_message__unpack(NULL, chunks.size() - 1, chunks.data() + 1);\n"
-)
-_PAIRING_NULL_GUARD = (
-    "        if (response == nullptr) {\n"
-    "            Serial.println(\"[ERROR]: Failed to decode Android TV pairing response\");\n"
-    "            chunks.clear();\n"
-    "            return;\n"
-    "        }\n"
-)
 _REMOTE_UNPACK_STATEMENT = (
     "        Remote__RemoteMessage *message = "
     "remote__remote_message__unpack(NULL, chunks.size() - 1, chunks.data() + 1);\n"
@@ -54,25 +43,19 @@ _REMOTE_NULL_GUARD = (
     "            return;\n"
     "        }\n"
 )
-_PAIRING_CERTIFICATES = (
-    "    WOLFSSL_X509 *server_cert = ssl_get_peer_certificate();\n"
-    "    WOLFSSL_X509 *client_cert = ssl_get_certificate();\n"
+_OLD_SSL_AVAILABLE = (
+    "int ssl_available() {\n"
+    "    return client.connected() ? client.available() : 0;\n"
+    "}\n"
 )
-_PAIRING_CERTIFICATE_GUARD = (
-    "\n    if (server_cert == nullptr || client_cert == nullptr) {\n"
-    "        Serial.println(\"[ERROR]: Pairing certificates are unavailable\");\n"
-    "        return false;\n"
+_NEW_SSL_AVAILABLE = (
+    "int ssl_available() {\n"
+    "    if (ssl == nullptr || !client.connected()) {\n"
+    "        return 0;\n"
     "    }\n"
-)
-_PAIRING_REQUEST_FIELDS = (
-    "    message.pairing_request->service_name = (char *)service_name;\n"
-    "    message.pairing_request->client_name = model;\n"
-)
-_PAIRING_REQUEST_FIXED_FIELDS = (
-    "    // Android TV Remote v2 requires this fixed service identifier.\n"
-    "    // The caller-provided value is the user-visible client name.\n"
-    "    message.pairing_request->service_name = (char *)\"atvremote\";\n"
-    "    message.pairing_request->client_name = (char *)service_name;\n"
+    "\n"
+    "    return wolfSSL_pending(ssl) + client.available();\n"
+    "}\n"
 )
 
 
@@ -120,58 +103,21 @@ def ensure_arduino_include(dependency_root: Path) -> bool:
     return True
 
 
-def insert_once(path: Path, statement: str, addition: str, description: str) -> bool:
-    content = path.read_text(encoding="utf-8")
-    if addition.strip() in content:
-        return False
-    if statement not in content:
-        raise RuntimeError(f"Expected {description} statement was not found")
-    path.write_text(content.replace(statement, statement + addition, 1), encoding="utf-8")
-    return True
-
-
-def harden_protocol_decoding(dependency_root: Path):
-    pairing_path = dependency_root / _PAIRING_MANAGER_PATH
-    remote_path = dependency_root / _REMOTE_MANAGER_PATH
-    if not pairing_path.exists() or not remote_path.exists():
-        raise RuntimeError("AndroidTvRemote manager source files are missing")
-
-    pairing_guard = insert_once(
-        pairing_path,
-        _PAIRING_UNPACK_STATEMENT,
-        _PAIRING_NULL_GUARD,
-        "pairing unpack",
-    )
-    remote_guard = insert_once(
-        remote_path,
-        _REMOTE_UNPACK_STATEMENT,
-        _REMOTE_NULL_GUARD,
-        "remote unpack",
-    )
-    certificate_guard = insert_once(
-        pairing_path,
-        _PAIRING_CERTIFICATES,
-        _PAIRING_CERTIFICATE_GUARD,
-        "pairing certificate",
-    )
-    return pairing_guard, remote_guard, certificate_guard
-
-
-def fix_pairing_request_fields(dependency_root: Path) -> bool:
-    path = dependency_root / _PAIRING_MESSAGE_MANAGER_PATH
+def guard_remote_decoding(dependency_root: Path) -> bool:
+    path = dependency_root / _REMOTE_MANAGER_PATH
     if not path.exists():
-        raise RuntimeError("AndroidTvRemote PairingMessageManager.cpp is missing")
+        raise RuntimeError("AndroidTvRemote RemoteManager.cpp is missing")
 
     content = path.read_text(encoding="utf-8")
-    if _PAIRING_REQUEST_FIXED_FIELDS.strip() in content:
+    if _REMOTE_NULL_GUARD.strip() in content:
         return False
-    if _PAIRING_REQUEST_FIELDS not in content:
-        raise RuntimeError("Expected Android TV pairing request fields were not found")
+    if _REMOTE_UNPACK_STATEMENT not in content:
+        raise RuntimeError("Expected remote protobuf unpack statement was not found")
 
     path.write_text(
         content.replace(
-            _PAIRING_REQUEST_FIELDS,
-            _PAIRING_REQUEST_FIXED_FIELDS,
+            _REMOTE_UNPACK_STATEMENT,
+            _REMOTE_UNPACK_STATEMENT + _REMOTE_NULL_GUARD,
             1,
         ),
         encoding="utf-8",
@@ -179,23 +125,41 @@ def fix_pairing_request_fields(dependency_root: Path) -> bool:
     return True
 
 
-def replace_remote_client_transport(dependency_root: Path) -> bool:
+def replace_project_source(
+    dependency_root: Path,
+    project_relative_source: Path,
+    dependency_relative_target: Path,
+    description: str,
+) -> bool:
     project_root = Path(env.subst("$PROJECT_DIR"))
-    safe_source_path = project_root / _SAFE_REMOTE_CLIENT_SOURCE
-    target_path = dependency_root / _REMOTE_CLIENT_PATH
+    source_path = project_root / project_relative_source
+    target_path = dependency_root / dependency_relative_target
 
-    if not safe_source_path.exists():
-        raise RuntimeError(
-            "GlobalController safe Android TV RemoteClient.cpp source is missing"
-        )
+    if not source_path.exists():
+        raise RuntimeError(f"GlobalController {description} source is missing")
     if not target_path.exists():
-        raise RuntimeError("Pinned AndroidTvRemote RemoteClient.cpp is missing")
+        raise RuntimeError(f"Pinned AndroidTvRemote {description} target is missing")
 
-    safe_content = safe_source_path.read_text(encoding="utf-8")
-    if target_path.read_text(encoding="utf-8") == safe_content:
+    source_content = source_path.read_text(encoding="utf-8")
+    if target_path.read_text(encoding="utf-8") == source_content:
         return False
 
-    target_path.write_text(safe_content, encoding="utf-8")
+    target_path.write_text(source_content, encoding="utf-8")
+    return True
+
+
+def expose_wolfssl_pending(dependency_root: Path) -> bool:
+    path = dependency_root / _REMOTE_CLIENT_PATH
+    content = path.read_text(encoding="utf-8")
+    if _NEW_SSL_AVAILABLE.strip() in content:
+        return False
+    if _OLD_SSL_AVAILABLE not in content:
+        raise RuntimeError("Expected ssl_available implementation was not found")
+
+    path.write_text(
+        content.replace(_OLD_SSL_AVAILABLE, _NEW_SSL_AVAILABLE, 1),
+        encoding="utf-8",
+    )
     return True
 
 
@@ -276,11 +240,20 @@ def patch_dependencies() -> None:
 
     removed_includes = remove_wifi_client_secure_includes(android_tv_root)
     added_arduino = ensure_arduino_include(android_tv_root)
-    pairing_guard, remote_guard, certificate_guard = harden_protocol_decoding(
-        android_tv_root
+    remote_guard = guard_remote_decoding(android_tv_root)
+    replaced_transport = replace_project_source(
+        android_tv_root,
+        _SAFE_REMOTE_CLIENT_SOURCE,
+        _REMOTE_CLIENT_PATH,
+        "checked TLS transport",
     )
-    fixed_pairing_request = fix_pairing_request_fields(android_tv_root)
-    replaced_transport = replace_remote_client_transport(android_tv_root)
+    exposed_pending = expose_wolfssl_pending(android_tv_root)
+    replaced_pairing = replace_project_source(
+        android_tv_root,
+        _SAFE_PAIRING_MANAGER_SOURCE,
+        _PAIRING_MANAGER_PATH,
+        "pairing protocol engine",
+    )
     changed_wolfssl = ensure_wolfssl_serial_helper_is_declaration(wolfssl_root)
 
     (android_tv_root / _MARKER_FILE).write_text("compatible\n", encoding="utf-8")
@@ -290,16 +263,14 @@ def patch_dependencies() -> None:
         changes.append("removed WiFiClientSecure includes")
     if added_arduino:
         changes.append("added Arduino.h for Serial")
-    if pairing_guard:
-        changes.append("guarded pairing protobuf decoding")
     if remote_guard:
         changes.append("guarded remote protobuf decoding")
-    if certificate_guard:
-        changes.append("guarded pairing certificates")
-    if fixed_pairing_request:
-        changes.append("fixed Android TV pairing service and client names")
     if replaced_transport:
         changes.append("installed checked TLS transport")
+    if exposed_pending:
+        changes.append("exposed wolfSSL buffered plaintext")
+    if replaced_pairing:
+        changes.append("installed complete pairing protocol engine")
     if changed_wolfssl:
         changes.append("fixed wolfSSL serial helper linkage")
 
