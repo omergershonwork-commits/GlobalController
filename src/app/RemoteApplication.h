@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
+#include "TvCommandSender.h"
 #include "domain/CommandBinding.h"
-#include "ir/IrTransmitter.h"
 #include "profile/TvProfile.h"
 
 enum class RemoteEventType : std::uint8_t {
@@ -11,6 +11,9 @@ enum class RemoteEventType : std::uint8_t {
     UnmappedInput,
     CommandUnavailable,
     UnsupportedProtocol,
+    WifiNotConfigured,
+    WifiNotReady,
+    TransportError,
     CommandSent,
 };
 
@@ -18,6 +21,7 @@ struct RemoteEvent {
     RemoteEventType type;
     TvCommand command;
     const char* label;
+    TvCommandRoute route;
     CodeVerification verification;
     IrCode code;
     bool repeated;
@@ -27,7 +31,7 @@ class RemoteApplication final {
 public:
     RemoteApplication(
         const TvProfile& profile,
-        IrTransmitter& transmitter,
+        TvCommandSender& commandSender,
         std::uint32_t initialRepeatDelayMs,
         std::uint32_t repeatIntervalMs
     );
@@ -49,7 +53,7 @@ private:
     static RemoteEvent unmappedEvent();
 
     const TvProfile* profile_;
-    IrTransmitter& transmitter_;
+    TvCommandSender& commandSender_;
     const std::uint32_t initialRepeatDelayMs_;
     const std::uint32_t repeatIntervalMs_;
 

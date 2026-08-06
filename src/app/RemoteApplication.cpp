@@ -12,22 +12,42 @@ RemoteEvent event(
     RemoteEventType type,
     TvCommand command,
     const char* label,
+    TvCommandRoute route,
     CodeVerification verification,
     const IrCode& code,
     bool repeated
 ) {
-    return {type, command, label, verification, code, repeated};
+    return {type, command, label, route, verification, code, repeated};
+}
+
+RemoteEventType eventTypeFor(CommandDeliveryStatus status) {
+    switch (status) {
+        case CommandDeliveryStatus::Sent:
+            return RemoteEventType::CommandSent;
+        case CommandDeliveryStatus::Unavailable:
+            return RemoteEventType::CommandUnavailable;
+        case CommandDeliveryStatus::UnsupportedProtocol:
+            return RemoteEventType::UnsupportedProtocol;
+        case CommandDeliveryStatus::WifiNotConfigured:
+            return RemoteEventType::WifiNotConfigured;
+        case CommandDeliveryStatus::WifiNotReady:
+            return RemoteEventType::WifiNotReady;
+        case CommandDeliveryStatus::Failed:
+            return RemoteEventType::TransportError;
+    }
+
+    return RemoteEventType::TransportError;
 }
 }  // namespace
 
 RemoteApplication::RemoteApplication(
     const TvProfile& profile,
-    IrTransmitter& transmitter,
+    TvCommandSender& commandSender,
     std::uint32_t initialRepeatDelayMs,
     std::uint32_t repeatIntervalMs
 )
     : profile_(&profile),
-      transmitter_(transmitter),
+      commandSender_(commandSender),
       initialRepeatDelayMs_(initialRepeatDelayMs),
       repeatIntervalMs_(repeatIntervalMs),
       commandHeld_(false),
@@ -84,36 +104,18 @@ void RemoteApplication::reset() {
 }
 
 RemoteEvent RemoteApplication::send(const CommandBinding& binding, bool repeated) {
-    const TvProfileEntry* entry = profile_->find(binding.command);
-    if (entry == nullptr) {
-        return event(
-            RemoteEventType::CommandUnavailable,
-            binding.command,
-            binding.label,
-            CodeVerification::Provisional,
-            kEmptyCode,
-            repeated
-        );
-    }
-
-    const SendResult result = transmitter_.send(entry->code);
-    if (result != SendResult::Success) {
-        return event(
-            RemoteEventType::UnsupportedProtocol,
-            binding.command,
-            binding.label,
-            entry->verification,
-            entry->code,
-            repeated
-        );
-    }
+    const CommandDeliveryResult delivery = commandSender_.send(
+        *profile_,
+        binding.command
+    );
 
     return event(
-        RemoteEventType::CommandSent,
+        eventTypeFor(delivery.status),
         binding.command,
         binding.label,
-        entry->verification,
-        entry->code,
+        delivery.route,
+        delivery.verification,
+        delivery.code,
         repeated
     );
 }
@@ -131,6 +133,7 @@ RemoteEvent RemoteApplication::noEvent() {
         RemoteEventType::None,
         TvCommand::Power,
         "",
+        TvCommandRoute::Infrared,
         CodeVerification::Provisional,
         kEmptyCode,
         false
@@ -142,6 +145,7 @@ RemoteEvent RemoteApplication::unmappedEvent() {
         RemoteEventType::UnmappedInput,
         TvCommand::Power,
         "",
+        TvCommandRoute::Infrared,
         CodeVerification::Provisional,
         kEmptyCode,
         false
