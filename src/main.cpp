@@ -28,7 +28,7 @@ constexpr std::uint8_t kXiaomiProfileIndex = 1;
 constexpr std::size_t kPairingCodeLength = 6;
 
 struct CandidateUiStatus {
-    char hostname[33];
+    char hostname[49];
     char ipAddress[16];
     std::uint8_t number;
     std::uint8_t count;
@@ -145,7 +145,7 @@ const char* activityLabel() {
         case AndroidTvRemoteState::TvDiscovering:
             return readCandidateStatus().count > 0 ? "TV PICK" : "TV SEARCH";
         case AndroidTvRemoteState::RemoteConnecting:
-            return "TV LINK";
+            return wifiRemote.candidateIdentityKnown() ? "TV LINK" : "TV ID";
         case AndroidTvRemoteState::PairingConnecting:
             return "PAIR TRY";
         case AndroidTvRemoteState::PairingCodeRequired:
@@ -300,14 +300,26 @@ void showCandidateScreen(const char* phase, bool selecting, std::uint16_t color)
         static_cast<unsigned int>(candidate.count)
     );
 
-    char detail[72];
-    std::snprintf(
-        detail,
-        sizeof(detail),
-        selecting ? "%s %s S=NEXT ENTER=SELECT" : "%s %s S=BACK N=STOP",
-        candidate.hostname[0] == '\0' ? "Android TV" : candidate.hostname,
-        candidate.ipAddress
-    );
+    char detail[80];
+    if (selecting) {
+        std::snprintf(
+            detail,
+            sizeof(detail),
+            wifiRemote.candidateIdentityKnown()
+                ? "%s %s S=NEXT ENTER=PAIR"
+                : "%s %s S=NEXT ENTER=IDENTIFY",
+            candidate.hostname[0] == '\0' ? "Android TV" : candidate.hostname,
+            candidate.ipAddress
+        );
+    } else {
+        std::snprintf(
+            detail,
+            sizeof(detail),
+            "%s %s S=BACK N=STOP",
+            candidate.hostname[0] == '\0' ? "Android TV" : candidate.hostname,
+            candidate.ipAddress
+        );
+    }
     remoteScreen.showMessage(state, detail, color);
 }
 
@@ -333,13 +345,17 @@ void showWifiState(AndroidTvRemoteState state) {
             if (readCandidateStatus().count > 0) {
                 showCandidateScreen("TV PICK", true, CYAN);
             } else {
-                remoteScreen.showMessage("TV SEARCH", "Discovering names and current IPs", CYAN);
+                remoteScreen.showMessage("TV SEARCH", "Discovering current Android TV addresses", CYAN);
             }
             return;
 
         case AndroidTvRemoteState::RemoteConnecting:
             pairingEntryActive = false;
-            showCandidateScreen("TV LINK", false, CYAN);
+            showCandidateScreen(
+                wifiRemote.candidateIdentityKnown() ? "TV LINK" : "TV ID",
+                false,
+                CYAN
+            );
             return;
 
         case AndroidTvRemoteState::PairingConnecting:
@@ -443,8 +459,9 @@ void selectCurrentCandidate() {
     }
 
     const CandidateUiStatus candidate = readCandidateStatus();
+    const bool alreadyIdentified = wifiRemote.candidateIdentityKnown();
     if (!wifiRemote.requestPairing()) {
-        remoteScreen.showMessage("TV SELECT", "Unable to queue TV selection", RED);
+        remoteScreen.showMessage("TV SELECT", "Unable to queue TV action", RED);
         return;
     }
 
@@ -456,9 +473,14 @@ void selectCurrentCandidate() {
         candidate.hostname[0] == '\0' ? "Android TV" : candidate.hostname,
         candidate.ipAddress
     );
-    remoteScreen.showMessage("TV SELECTED", detail, CYAN);
+    remoteScreen.showMessage(
+        alreadyIdentified ? "PAIR START" : "TV IDENTIFY",
+        detail,
+        alreadyIdentified ? YELLOW : CYAN
+    );
     Serial.printf(
-        "Keyboard: selected Android TV %u/%u host=%s ip=%s\n",
+        "Keyboard: %s Android TV %u/%u host=%s ip=%s\n",
+        alreadyIdentified ? "pairing" : "identifying",
         static_cast<unsigned int>(candidate.number),
         static_cast<unsigned int>(candidate.count),
         candidate.hostname,
@@ -485,11 +507,12 @@ void updateWifiStateUi() {
 
     if (candidateChanged && candidate.count > 0) {
         Serial.printf(
-            "UI candidate %u/%u: host=%s ip=%s\n",
+            "UI candidate %u/%u: display=%s ip=%s identified=%s\n",
             static_cast<unsigned int>(candidate.number),
             static_cast<unsigned int>(candidate.count),
             candidate.hostname,
-            candidate.ipAddress
+            candidate.ipAddress,
+            wifiRemote.candidateIdentityKnown() ? "yes" : "no"
         );
     }
 
@@ -765,7 +788,15 @@ void handleKeyboard() {
         logEvent(event);
         remoteScreen.showEvent(event);
     } else if (inputChanged && !pressed) {
-        remoteScreen.showReady();
+        // Key release previously called showReady() unconditionally, which
+        // erased the TV picker after S was released. Preserve the active
+        // Xiaomi Wi-Fi workflow instead.
+        if (xiaomiSelected() && wifiRemote.requested()) {
+            showWifiState(wifiRemote.state());
+            refreshIndicators(millis(), true);
+        } else {
+            remoteScreen.showReady();
+        }
     }
 }
 
@@ -777,7 +808,7 @@ void logHealthIfDue(unsigned long now) {
     lastHealthLogMs = now;
     const CandidateUiStatus candidate = readCandidateStatus();
     Serial.printf(
-        "HEALTH uptime=%lu profile=%s wifi-active=%s state=%s candidate=%u/%u host=%s ip=%s rssi=%ld battery=%ld charging=%s free-heap=%u max-ui-loop-ms=%lu max-network-ms=%lu network-stack-free=%lu/%lu\n",
+        "HEALTH uptime=%lu profile=%s wifi-active=%s state=%s candidate=%u/%u display=%s ip=%s identity=%s rssi=%ld battery=%ld charging=%s free-heap=%u max-ui-loop-ms=%lu max-network-ms=%lu network-stack-free=%lu/%lu\n",
         now,
         activeProfile().brand(),
         wifiRemote.requested() ? "yes" : "no",
@@ -786,6 +817,7 @@ void logHealthIfDue(unsigned long now) {
         static_cast<unsigned int>(candidate.count),
         candidate.hostname,
         candidate.ipAddress,
+        wifiRemote.candidateIdentityKnown() ? "known" : "mdns-only",
         static_cast<long>(recentWifiRssi),
         static_cast<long>(lastBatteryPercent),
         lastBatteryCharging ? "yes" : "no",
@@ -810,10 +842,10 @@ void setup() {
     sampleMetrics(millis(), true);
     refreshIndicators(millis(), true);
 
-    Serial.println("GlobalController TV-009 manual TV picker build ready");
+    Serial.println("GlobalController TV-009 app-style TV identity build ready");
     Serial.printf("Loaded profile: %s %s\n", activeProfile().brand(), activeProfile().model());
     Serial.printf("IR transmitter initialized on GPIO %u\n", kIrTxPin);
-    Serial.println("T TV; N Wi-Fi; S next/back; Enter selects TV; G metrics; C pairing code");
+    Serial.println("T TV; N Wi-Fi; S next/back; Enter identify/pair; G metrics; C pairing code");
     Serial.printf(
         "Repeat timing: initial=%lu ms interval=%lu ms\n",
         static_cast<unsigned long>(kInitialRepeatDelayMs),
