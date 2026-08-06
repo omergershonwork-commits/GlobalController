@@ -161,6 +161,10 @@ bool AndroidTvRemoteRuntime::pairingCodeRequired() const {
     return requested_ && adapter_.pairingCodeRequired();
 }
 
+bool AndroidTvRemoteRuntime::candidateIdentityKnown() const {
+    return requested_ && adapter_.candidateIdentityKnown();
+}
+
 bool AndroidTvRemoteRuntime::requested() const {
     return requested_;
 }
